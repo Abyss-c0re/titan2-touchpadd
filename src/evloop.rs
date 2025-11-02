@@ -1,17 +1,78 @@
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, RecvTimeoutError},
+    },
+    thread,
+    time::Duration,
+};
+
 use evdev::{
-    Device, EventType, InputEvent, KeyCode, RelativeAxisCode, SynchronizationCode,
+    Device, EventSummary, EventType, InputEvent, KeyCode, RelativeAxisCode, SynchronizationCode,
     uinput::VirtualDevice,
 };
 use tracing::{debug, info, warn};
 
 use crate::gesture::{Gesture, GestureDetector};
 
-pub(crate) fn run_evloop(touchpad_dev: Device, mut uinput_dev: VirtualDevice) -> eyre::Result<()> {
+// Every key press rejects touch events for this long
+const KEYBOARD_TOUCH_REJECTION_TIMEOUT: Duration = Duration::from_millis(500);
+
+fn run_keyboard_touch_rejection_loop(mut keyboard_dev: Device) -> Arc<AtomicBool> {
+    let flag = Arc::new(AtomicBool::new(false));
+    let _flag = flag.clone();
+
+    let (key_tx, key_rx) = mpsc::sync_channel(16);
+
+    thread::spawn(move || {
+        while let Ok(events) = keyboard_dev.fetch_events() {
+            for ev in events {
+                // Any key event means we reject
+                if let EventSummary::Key(_, _, _) = ev.destructure() {
+                    key_tx.try_send(()).ok();
+                }
+            }
+        }
+    });
+
+    thread::spawn(move || {
+        loop {
+            let timeout = if _flag.load(Ordering::Relaxed) {
+                KEYBOARD_TOUCH_REJECTION_TIMEOUT
+            } else {
+                Duration::from_secs(86400)
+            };
+
+            match key_rx.recv_timeout(timeout) {
+                Ok(_) => {
+                    debug!("Keyboard event received, rejecting touch for a while");
+                    _flag.store(true, Ordering::Relaxed)
+                }
+                Err(RecvTimeoutError::Timeout) => _flag.store(false, Ordering::Relaxed),
+                Err(_) => break,
+            }
+        }
+    });
+
+    return flag;
+}
+
+pub(crate) fn run_evloop(
+    touchpad_dev: Device,
+    keyboard_dev: Device,
+    mut uinput_dev: VirtualDevice,
+) -> eyre::Result<()> {
+    let reject_flag = run_keyboard_touch_rejection_loop(keyboard_dev);
     let detector = GestureDetector::new(touchpad_dev)?;
 
     info!("Main event loop started");
 
     for gesture in detector.flatten() {
+        if reject_flag.load(Ordering::Relaxed) {
+            continue;
+        }
+
         let Ok(gesture) = gesture.inspect_err(|e| warn!("Could not construct touch state from events, ignoring the current SYN_REPORT: {:?}", e)) else {
             continue;
         };

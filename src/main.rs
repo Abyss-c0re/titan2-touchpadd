@@ -13,8 +13,8 @@ fn main() -> eyre::Result<()> {
 
     info!("Detecting Titan 2's touchpad input...");
 
-    let Some(touchpad_dev) = find_touchpad_dev()? else {
-        error!("No touchpad device found, exitting");
+    let (Some(touchpad_dev), Some(keyboard_dev)) = find_touchpad_and_keyboard_dev()? else {
+        error!("No touchpad or keyboard devices found, exitting");
         return Err(eyre!("No touchpad device found"));
     };
 
@@ -48,10 +48,13 @@ fn main() -> eyre::Result<()> {
             .ok_or_eyre("can't decode pathbuf")?
     );
 
-    evloop::run_evloop(touchpad_dev, uinput_dev)
+    evloop::run_evloop(touchpad_dev, keyboard_dev, uinput_dev)
 }
 
-fn find_touchpad_dev() -> eyre::Result<Option<Device>> {
+fn find_touchpad_and_keyboard_dev() -> eyre::Result<(Option<Device>, Option<Device>)> {
+    let mut touchpad_dev = None;
+    let mut keyboard_dev = None;
+
     for ent in std::fs::read_dir("/dev/input")? {
         let Ok(ent) = ent else {
             continue;
@@ -80,13 +83,16 @@ fn find_touchpad_dev() -> eyre::Result<Option<Device>> {
             continue;
         };
 
-        if let Some(name) = dev.name()
-            && name == "touchPad"
-        {
-            info!("Found touch pad device at /dev/input/{filename}");
-            return Ok(Some(dev));
+        if let Some(name) = dev.name() {
+            if name == "touchPad" {
+                info!("Found touch pad device at /dev/input/{filename}");
+                touchpad_dev = Some(dev);
+            } else if name == "TitanKey" {
+                info!("Found keyboard device at /dev/input/{filename}");
+                keyboard_dev = Some(dev);
+            }
         }
     }
 
-    Ok(None)
+    Ok((touchpad_dev, keyboard_dev))
 }
