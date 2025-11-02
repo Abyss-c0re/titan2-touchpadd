@@ -26,7 +26,7 @@ pub(crate) fn run_evloop(touchpad_dev: Device, mut uinput_dev: VirtualDevice) ->
                     InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_Y.0, delta_y),
                 ])?;
             }
-            Gesture::LeftClick => {
+            Gesture::Click => {
                 debug!("Left click!");
                 uinput_dev.emit(&[
                     InputEvent::new(EventType::KEY.0, KeyCode::BTN_LEFT.0, 1),
@@ -37,6 +37,19 @@ pub(crate) fn run_evloop(touchpad_dev: Device, mut uinput_dev: VirtualDevice) ->
                         0,
                     ),
                     InputEvent::new(EventType::KEY.0, KeyCode::BTN_LEFT.0, 0),
+                ])?;
+            }
+            Gesture::LongClick => {
+                debug!("Right click!");
+                uinput_dev.emit(&[
+                    InputEvent::new(EventType::KEY.0, KeyCode::BTN_RIGHT.0, 1),
+                    // Need a SYN_REPORT in between to make sure it registers as a click (two separate states)
+                    InputEvent::new(
+                        EventType::SYNCHRONIZATION.0,
+                        SynchronizationCode::SYN_REPORT.0,
+                        0,
+                    ),
+                    InputEvent::new(EventType::KEY.0, KeyCode::BTN_RIGHT.0, 0),
                 ])?;
             }
             Gesture::DragStart => {
