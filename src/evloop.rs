@@ -107,10 +107,7 @@ impl Iterator for TouchStateTracker {
     }
 }
 
-pub(crate) fn run_evloop(
-    mut touchpad_dev: Device,
-    mut uinput_dev: VirtualDevice,
-) -> eyre::Result<()> {
+pub(crate) fn run_evloop(touchpad_dev: Device, mut uinput_dev: VirtualDevice) -> eyre::Result<()> {
     let tracker = TouchStateTracker::new(touchpad_dev);
 
     let mut last_touch: Option<TouchState> = None;
