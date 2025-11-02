@@ -2,14 +2,35 @@ use std::os::unix::fs::FileTypeExt;
 
 use evdev::{AttributeSet, Device, KeyCode, RelativeAxisCode, uinput};
 use eyre::{OptionExt, eyre};
-use tracing::{error, info, warn};
+use tracing::{error, info, level_filters::LevelFilter, warn};
+use tracing_logcat::{LogcatMakeWriter, LogcatTag};
+use tracing_subscriber::{EnvFilter, fmt::format::Format};
 
 mod evloop;
 mod gesture;
 mod state;
 
 fn main() -> eyre::Result<()> {
-    tracing_subscriber::fmt::init();
+    let base_subscriber = tracing_subscriber::fmt().with_env_filter(
+        EnvFilter::builder()
+            .with_default_directive(LevelFilter::INFO.into())
+            .from_env_lossy(),
+    );
+
+    if let Ok(o) = std::env::var("LOGCAT_OUTPUT")
+        && o == "true"
+    {
+        let tag = LogcatTag::Fixed(env!("CARGO_PKG_NAME").to_owned());
+        let writer = LogcatMakeWriter::new(tag).expect("Failed to initialize logcat writer");
+
+        base_subscriber
+            .with_writer(writer)
+            .event_format(Format::default().with_level(false).without_time())
+            .with_ansi(false)
+            .init();
+    } else {
+        base_subscriber.init();
+    }
 
     info!("Detecting Titan 2's touchpad input...");
 
