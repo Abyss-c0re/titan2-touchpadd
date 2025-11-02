@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{sync::mpsc, thread, time::Duration};
 
 use evdev::Device;
 
@@ -13,15 +13,26 @@ pub(crate) enum Gesture {
 }
 
 pub(crate) struct GestureDetector {
-    tracker: TouchStateTracker,
+    event_rx: mpsc::Receiver<eyre::Result<TouchState>>,
     last_touch: Option<TouchState>,
     first_down: Option<TouchState>,
 }
 
 impl GestureDetector {
     pub(crate) fn new(touchpad_dev: Device) -> GestureDetector {
+        let (event_tx, event_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let tracker = TouchStateTracker::new(touchpad_dev);
+
+            for event in tracker {
+                if event_tx.send(event).is_err() {
+                    break;
+                }
+            }
+        });
+
         GestureDetector {
-            tracker: TouchStateTracker::new(touchpad_dev),
+            event_rx,
             last_touch: None,
             first_down: None,
         }
@@ -32,7 +43,7 @@ impl Iterator for GestureDetector {
     type Item = eyre::Result<Gesture>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        for touch in &mut self.tracker {
+        while let Ok(touch) = self.event_rx.recv() {
             let touch = match touch {
                 Ok(touch) => touch,
                 Err(e) => return Some(Err(e)),
