@@ -23,7 +23,6 @@ const NO_MOVEMENT_THRESHOLD: f64 = 0.005;
 
 /// How much of each edge do we consider as the "scrolling" region
 const SCROLL_EDGE_VERTICAL_THRESHOLD: f64 = 0.005;
-const SCROLL_EDGE_HORIZONTAL_THRESHOLD: f64 = 0.002;
 
 #[derive(Debug)]
 pub(crate) enum Gesture {
@@ -39,8 +38,6 @@ pub(crate) enum Gesture {
     DragEnd,
     /// Vertical scrolling
     VerticalScroll(i32),
-    /// Horizontal scrolling
-    HorizontalScroll(i32),
 }
 
 pub(crate) struct GestureDetector {
@@ -209,11 +206,6 @@ impl Iterator for GestureDetector {
                     {
                         // This is vertical scroll (left or right edge)
                         yield_values.push(Ok(Gesture::VerticalScroll(delta_y)));
-                    } else if (first_down.y as f64)
-                        < self.max_y as f64 * SCROLL_EDGE_HORIZONTAL_THRESHOLD
-                    {
-                        // This is horizontal scroll (top edge)
-                        yield_values.push(Ok(Gesture::HorizontalScroll(delta_x)));
                     } else {
                         yield_values.push(Ok(Gesture::PointerMove(delta_x, delta_y)));
                     }

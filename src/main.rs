@@ -24,7 +24,6 @@ fn main() -> eyre::Result<()> {
         axes.insert(RelativeAxisCode::REL_X);
         axes.insert(RelativeAxisCode::REL_Y);
         axes.insert(RelativeAxisCode::REL_WHEEL_HI_RES);
-        axes.insert(RelativeAxisCode::REL_HWHEEL_HI_RES);
         axes
     };
 

@@ -68,14 +68,6 @@ pub(crate) fn run_evloop(touchpad_dev: Device, mut uinput_dev: VirtualDevice) ->
                     val,
                 )])?;
             }
-            Gesture::HorizontalScroll(val) => {
-                debug!("Horizontal scroll!");
-                uinput_dev.emit(&[InputEvent::new(
-                    EventType::RELATIVE.0,
-                    RelativeAxisCode::REL_HWHEEL_HI_RES.0,
-                    val,
-                )])?;
-            }
         }
     }
     Ok(())
