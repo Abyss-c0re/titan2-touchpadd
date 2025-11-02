@@ -4,9 +4,10 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use evdev::Device;
+use evdev::{AbsoluteAxisCode, Device};
+use eyre::eyre;
 use smallvec::{SmallVec, smallvec};
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::state::{TouchState, TouchStateTracker};
 
@@ -15,6 +16,10 @@ const DOUBLE_CLICK_DRAG_TIMEOUT: Duration = Duration::from_millis(200);
 const LONG_CLICK_DURATION: Duration = Duration::from_secs(1);
 
 const INVALID_DURATION: Duration = Duration::from_secs(u64::MAX);
+
+/// The threshold (relative to maxmimum values) of what we consider "no movement"
+/// Used for long-click detection
+const NO_MOVEMENT_THRESHOLD: f64 = 0.005;
 
 #[derive(Debug)]
 pub(crate) enum Gesture {
@@ -34,6 +39,8 @@ pub(crate) struct GestureDetector {
     event_rx: mpsc::Receiver<eyre::Result<TouchState>>,
     last_touch: Option<TouchState>,
     first_down: Option<TouchState>,
+    max_x: i32,
+    max_y: i32,
     /// Absolute values of deltaX / Y, accumulated since the last down event
     /// This is used to detect long-tap-to-right-click
     delta_x_abs_acc: u32,
@@ -48,7 +55,24 @@ pub(crate) struct GestureDetector {
 }
 
 impl GestureDetector {
-    pub(crate) fn new(touchpad_dev: Device) -> GestureDetector {
+    pub(crate) fn new(touchpad_dev: Device) -> eyre::Result<GestureDetector> {
+        // First acquire some basic properties of the device
+        let mut max_x = -1;
+        let mut max_y = -1;
+        for (axis, info) in touchpad_dev.get_absinfo()? {
+            if axis == AbsoluteAxisCode::ABS_MT_POSITION_X {
+                max_x = info.maximum();
+            } else if axis == AbsoluteAxisCode::ABS_MT_POSITION_Y {
+                max_y = info.maximum()
+            }
+        }
+
+        if max_x == -1 || max_y == -1 {
+            return Err(eyre!("No max X / Y coordinates available"));
+        }
+
+        info!("Touch device has max_x = {max_x}, max_y = {max_y}, assuming minimums are 0");
+
         let (event_tx, event_rx) = mpsc::sync_channel(16);
         thread::spawn(move || {
             let tracker = TouchStateTracker::new(touchpad_dev);
@@ -61,7 +85,7 @@ impl GestureDetector {
             }
         });
 
-        GestureDetector {
+        Ok(GestureDetector {
             event_rx,
             last_touch: None,
             first_down: None,
@@ -70,7 +94,9 @@ impl GestureDetector {
             single_click_pending: false,
             dragging: false,
             long_click_emitted: false,
-        }
+            max_x,
+            max_y,
+        })
     }
 }
 
@@ -113,8 +139,8 @@ impl Iterator for GestureDetector {
                 }
                 Err(RecvTimeoutError::Timeout) if self.first_down.is_some() => {
                     // Nothing happened since the last down event, which means this may be a long click
-                    if self.delta_x_abs_acc < 50
-                        && self.delta_y_abs_acc < 50
+                    if (self.delta_x_abs_acc as f64) < self.max_x as f64 * NO_MOVEMENT_THRESHOLD
+                        && (self.delta_y_abs_acc as f64) < self.max_y as f64 * NO_MOVEMENT_THRESHOLD
                         && !self.long_click_emitted
                     {
                         self.long_click_emitted = true;
@@ -158,8 +184,8 @@ impl Iterator for GestureDetector {
                         .duration_since(first_down.timestamp)
                         .unwrap_or(INVALID_DURATION)
                         >= LONG_CLICK_DURATION
-                    && self.delta_x_abs_acc < 50
-                    && self.delta_y_abs_acc < 50
+                    && (self.delta_x_abs_acc as f64) < self.max_x as f64 * NO_MOVEMENT_THRESHOLD
+                    && (self.delta_y_abs_acc as f64) < self.max_y as f64 * NO_MOVEMENT_THRESHOLD
                     && !self.long_click_emitted
                 {
                     // This is a long click

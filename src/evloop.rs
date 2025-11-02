@@ -7,7 +7,7 @@ use tracing::{debug, info, warn};
 use crate::gesture::{Gesture, GestureDetector};
 
 pub(crate) fn run_evloop(touchpad_dev: Device, mut uinput_dev: VirtualDevice) -> eyre::Result<()> {
-    let detector = GestureDetector::new(touchpad_dev);
+    let detector = GestureDetector::new(touchpad_dev)?;
 
     info!("Main event loop started");
 
