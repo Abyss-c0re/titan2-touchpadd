@@ -1,4 +1,4 @@
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use evdev::{
     AbsoluteAxisCode, Device, EventSummary, EventType, InputEvent, KeyCode, RelativeAxisCode,
@@ -114,6 +114,7 @@ pub(crate) fn run_evloop(
     let tracker = TouchStateTracker::new(touchpad_dev);
 
     let mut last_touch: Option<TouchState> = None;
+    let mut first_down: Option<TouchState> = None;
 
     info!("Main event loop started");
 
@@ -127,22 +128,42 @@ pub(crate) fn run_evloop(
         if let Some(ref last_touch) = last_touch {
             if last_touch.down && touch.down {
                 // Dragging pointer
+                let delta_x = touch.x - last_touch.x;
+                let delta_y = touch.y - last_touch.y;
+                debug!("Pointer drag, deltaX={delta_x}, deltaY={delta_y}");
                 uinput_dev.emit(&[
+                    InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_X.0, delta_x),
+                    InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_Y.0, delta_y),
+                ])?;
+            } else if let Some(ref first_down) = first_down
+                && !touch.down
+                && touch.timestamp.duration_since(first_down.timestamp)?
+                    < Duration::from_millis(100)
+            {
+                // Single left click
+                debug!("Left click!");
+                uinput_dev.emit(&[
+                    InputEvent::new(EventType::KEY.0, KeyCode::BTN_LEFT.0, 1),
+                    // Need a SYN_REPORT in between to make sure it registers as a click (two separate states)
                     InputEvent::new(
-                        EventType::RELATIVE.0,
-                        RelativeAxisCode::REL_X.0,
-                        touch.x - last_touch.x,
+                        EventType::SYNCHRONIZATION.0,
+                        SynchronizationCode::SYN_REPORT.0,
+                        0,
                     ),
-                    InputEvent::new(
-                        EventType::RELATIVE.0,
-                        RelativeAxisCode::REL_Y.0,
-                        touch.y - last_touch.y,
-                    ),
+                    InputEvent::new(EventType::KEY.0, KeyCode::BTN_LEFT.0, 0),
                 ])?;
             }
         }
 
-        last_touch = Some(touch);
+        last_touch = Some(touch.clone());
+
+        if touch.down {
+            if first_down.is_none() {
+                first_down = Some(touch.clone());
+            }
+        } else {
+            first_down = None;
+        }
     }
     Ok(())
 }
