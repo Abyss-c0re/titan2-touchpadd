@@ -211,10 +211,8 @@ impl Iterator for GestureDetector {
                         yield_values.push(Ok(Gesture::VerticalScroll(delta_y)));
                     } else if (first_down.y as f64)
                         < self.max_y as f64 * SCROLL_EDGE_HORIZONTAL_THRESHOLD
-                        || ((self.max_y - first_down.y) as f64)
-                            < self.max_y as f64 * SCROLL_EDGE_HORIZONTAL_THRESHOLD
                     {
-                        // This is horizontal scroll (top edge or bottom)
+                        // This is horizontal scroll (top edge)
                         yield_values.push(Ok(Gesture::HorizontalScroll(delta_y)));
                     } else {
                         yield_values.push(Ok(Gesture::PointerMove(delta_x, delta_y)));
