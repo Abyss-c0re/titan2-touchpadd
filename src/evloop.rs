@@ -64,7 +64,7 @@ pub(crate) fn run_evloop(touchpad_dev: Device, mut uinput_dev: VirtualDevice) ->
                 debug!("Vertical scroll!");
                 uinput_dev.emit(&[InputEvent::new(
                     EventType::RELATIVE.0,
-                    RelativeAxisCode::REL_WHEEL.0,
+                    RelativeAxisCode::REL_WHEEL_HI_RES.0,
                     val,
                 )])?;
             }
@@ -72,7 +72,7 @@ pub(crate) fn run_evloop(touchpad_dev: Device, mut uinput_dev: VirtualDevice) ->
                 debug!("Horizontal scroll!");
                 uinput_dev.emit(&[InputEvent::new(
                     EventType::RELATIVE.0,
-                    RelativeAxisCode::REL_HWHEEL.0,
+                    RelativeAxisCode::REL_HWHEEL_HI_RES.0,
                     val,
                 )])?;
             }
