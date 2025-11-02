@@ -22,7 +22,8 @@ const INVALID_DURATION: Duration = Duration::from_secs(u64::MAX);
 const NO_MOVEMENT_THRESHOLD: f64 = 0.005;
 
 /// How much of each edge do we consider as the "scrolling" region
-const SCROLL_EDGE_THRESHOLD: f64 = 0.005;
+const SCROLL_EDGE_VERTICAL_THRESHOLD: f64 = 0.005;
+const SCROLL_EDGE_HORIZONTAL_THRESHOLD: f64 = 0.002;
 
 #[derive(Debug)]
 pub(crate) enum Gesture {
@@ -202,15 +203,16 @@ impl Iterator for GestureDetector {
                     let delta_x = touch.x - last_touch.x;
                     let delta_y = touch.y - last_touch.y;
 
-                    if (first_down.x as f64) < self.max_x as f64 * SCROLL_EDGE_THRESHOLD
+                    if (first_down.x as f64) < self.max_x as f64 * SCROLL_EDGE_VERTICAL_THRESHOLD
                         || ((self.max_x - first_down.x) as f64)
-                            < self.max_x as f64 * SCROLL_EDGE_THRESHOLD
+                            < self.max_x as f64 * SCROLL_EDGE_VERTICAL_THRESHOLD
                     {
                         // This is vertical scroll (left or right edge)
                         yield_values.push(Ok(Gesture::VerticalScroll(delta_y)));
-                    } else if (first_down.y as f64) < self.max_y as f64 * SCROLL_EDGE_THRESHOLD
+                    } else if (first_down.y as f64)
+                        < self.max_y as f64 * SCROLL_EDGE_HORIZONTAL_THRESHOLD
                         || ((self.max_y - first_down.y) as f64)
-                            < self.max_y as f64 * SCROLL_EDGE_THRESHOLD
+                            < self.max_y as f64 * SCROLL_EDGE_HORIZONTAL_THRESHOLD
                     {
                         // This is horizontal scroll (top edge or bottom)
                         yield_values.push(Ok(Gesture::HorizontalScroll(delta_y)));
