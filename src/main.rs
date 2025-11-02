@@ -4,6 +4,8 @@ use evdev::{AttributeSet, Device, KeyCode, RelativeAxisCode, uinput};
 use eyre::{OptionExt, eyre};
 use tracing::{error, info, warn};
 
+mod evloop;
+
 fn main() -> eyre::Result<()> {
     tracing_subscriber::fmt::init();
 
@@ -45,7 +47,7 @@ fn main() -> eyre::Result<()> {
             .ok_or_eyre("can't decode pathbuf")?
     );
 
-    Ok(())
+    evloop::run_evloop(touchpad_dev, uinput_dev)
 }
 
 fn find_touchpad_dev() -> eyre::Result<Option<Device>> {
