@@ -1,5 +1,5 @@
 use std::{
-    sync::mpsc::{self, RecvTimeoutError},
+    sync::mpsc::{self, RecvTimeoutError, TrySendError},
     thread,
     time::{Duration, SystemTime},
 };
@@ -83,7 +83,7 @@ impl GestureDetector {
             let tracker = TouchStateTracker::new(touchpad_dev);
 
             for event in tracker {
-                if event_tx.send(event).is_err() {
+                if let Err(TrySendError::Disconnected(_)) = event_tx.try_send(event) {
                     // Terminate if the receiving end is dropped
                     break;
                 }
