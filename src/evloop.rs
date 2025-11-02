@@ -1,7 +1,8 @@
 use std::time::SystemTime;
 
 use evdev::{
-    AbsoluteAxisCode, Device, EventSummary, KeyCode, SynchronizationCode, uinput::VirtualDevice,
+    AbsoluteAxisCode, Device, EventSummary, EventType, InputEvent, KeyCode, RelativeAxisCode,
+    SynchronizationCode, uinput::VirtualDevice,
 };
 use eyre::eyre;
 use tracing::{debug, error, info, warn};
@@ -112,6 +113,8 @@ pub(crate) fn run_evloop(
 ) -> eyre::Result<()> {
     let tracker = TouchStateTracker::new(touchpad_dev);
 
+    let mut last_touch: Option<TouchState> = None;
+
     info!("Main event loop started");
 
     for touch in tracker {
@@ -120,6 +123,26 @@ pub(crate) fn run_evloop(
         };
 
         debug!("Touch event acquired: {:?}", touch);
+
+        if let Some(ref last_touch) = last_touch {
+            if last_touch.down && touch.down {
+                // Dragging pointer
+                uinput_dev.emit(&[
+                    InputEvent::new(
+                        EventType::RELATIVE.0,
+                        RelativeAxisCode::REL_X.0,
+                        touch.x - last_touch.x,
+                    ),
+                    InputEvent::new(
+                        EventType::RELATIVE.0,
+                        RelativeAxisCode::REL_Y.0,
+                        touch.y - last_touch.y,
+                    ),
+                ])?;
+            }
+        }
+
+        last_touch = Some(touch);
     }
     Ok(())
 }
