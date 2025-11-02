@@ -5,6 +5,8 @@ use eyre::{OptionExt, eyre};
 use tracing::{error, info, warn};
 
 mod evloop;
+mod gesture;
+mod state;
 
 fn main() -> eyre::Result<()> {
     tracing_subscriber::fmt::init();
