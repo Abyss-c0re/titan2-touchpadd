@@ -34,6 +34,11 @@ You will need to launch this daemon as root or a user that has access to `/dev/i
 corresponding SELinux permissions (if on Android). You will also need a way to block the original input devices from being
 used by the OS. On [PeterGSI](https://gitea.angry.im/PeterGSI), this is done via a [patch](https://gitea.angry.im/PeterGSI/patches/src/branch/aosp16/frameworks/native/0007-inputflinger-Allow-ignoring-touch-devices-using-a-sp.patch) to `inputflinger`.
 
+Here's an example of how to integrate this into an AOSP build:
+
+<https://gitea.angry.im/PeterGSI/android_vendor_prebuilts_titan2-touchpadd>  
+<https://gitea.angry.im/PeterGSI/android_device_peter_gsi>
+
 This daemon is explicitly designed to not actually rely on anything Android-specific, so should there exist a port
 of Linux Mobile (like Halium-based distributions such as UBports or Droidian, which should be within the realm of possibility),
 it should still work as-is.
