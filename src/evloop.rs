@@ -60,6 +60,22 @@ pub(crate) fn run_evloop(touchpad_dev: Device, mut uinput_dev: VirtualDevice) ->
                 debug!("Drag ended!");
                 uinput_dev.emit(&[InputEvent::new(EventType::KEY.0, KeyCode::BTN_LEFT.0, 0)])?;
             }
+            Gesture::VerticalScroll(val) => {
+                debug!("Vertical scroll!");
+                uinput_dev.emit(&[InputEvent::new(
+                    EventType::RELATIVE.0,
+                    RelativeAxisCode::REL_WHEEL.0,
+                    val,
+                )])?;
+            }
+            Gesture::HorizontalScroll(val) => {
+                debug!("Horizontal scroll!");
+                uinput_dev.emit(&[InputEvent::new(
+                    EventType::RELATIVE.0,
+                    RelativeAxisCode::REL_HWHEEL.0,
+                    val,
+                )])?;
+            }
         }
     }
     Ok(())

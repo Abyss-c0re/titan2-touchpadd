@@ -21,6 +21,9 @@ const INVALID_DURATION: Duration = Duration::from_secs(u64::MAX);
 /// Used for long-click detection
 const NO_MOVEMENT_THRESHOLD: f64 = 0.005;
 
+/// How much of each edge do we consider as the "scrolling" region
+const SCROLL_EDGE_THRESHOLD: f64 = 0.005;
+
 #[derive(Debug)]
 pub(crate) enum Gesture {
     /// X, Y coords
@@ -33,6 +36,10 @@ pub(crate) enum Gesture {
     DragStart,
     /// End of a drag
     DragEnd,
+    /// Vertical scrolling
+    VerticalScroll(i32),
+    /// Horizontal scrolling
+    HorizontalScroll(i32),
 }
 
 pub(crate) struct GestureDetector {
@@ -177,13 +184,13 @@ impl Iterator for GestureDetector {
             if touch.down
                 && let Some(ref last_touch) = self.last_touch
                 && last_touch.down
+                && let Some(ref first_down) = self.first_down
             {
-                if let Some(ref first_down) = self.first_down
-                    && touch
-                        .timestamp
-                        .duration_since(first_down.timestamp)
-                        .unwrap_or(INVALID_DURATION)
-                        >= LONG_CLICK_DURATION
+                if touch
+                    .timestamp
+                    .duration_since(first_down.timestamp)
+                    .unwrap_or(INVALID_DURATION)
+                    >= LONG_CLICK_DURATION
                     && (self.delta_x_abs_acc as f64) < self.max_x as f64 * NO_MOVEMENT_THRESHOLD
                     && (self.delta_y_abs_acc as f64) < self.max_y as f64 * NO_MOVEMENT_THRESHOLD
                     && !self.long_click_emitted
@@ -194,7 +201,16 @@ impl Iterator for GestureDetector {
                 } else {
                     let delta_x = touch.x - last_touch.x;
                     let delta_y = touch.y - last_touch.y;
-                    yield_values.push(Ok(Gesture::PointerMove(delta_x, delta_y)));
+
+                    if (first_down.x as f64) < self.max_x as f64 * SCROLL_EDGE_THRESHOLD {
+                        // This is vertical scroll (left edge)
+                        yield_values.push(Ok(Gesture::VerticalScroll(delta_y)));
+                    } else if (first_down.y as f64) < self.max_y as f64 * SCROLL_EDGE_THRESHOLD {
+                        // This is horizontal scroll (top edge)
+                        yield_values.push(Ok(Gesture::HorizontalScroll(delta_y)));
+                    } else {
+                        yield_values.push(Ok(Gesture::PointerMove(delta_x, delta_y)));
+                    }
                     self.delta_x_abs_acc += delta_x.abs() as u32;
                     self.delta_y_abs_acc += delta_y.abs() as u32;
                 }
