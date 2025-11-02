@@ -11,7 +11,7 @@ pub(crate) fn run_evloop(touchpad_dev: Device, mut uinput_dev: VirtualDevice) ->
 
     info!("Main event loop started");
 
-    for gesture in detector {
+    for gesture in detector.flatten() {
         let Ok(gesture) = gesture.inspect_err(|e| warn!("Could not construct touch state from events, ignoring the current SYN_REPORT: {:?}", e)) else {
             continue;
         };
@@ -38,6 +38,14 @@ pub(crate) fn run_evloop(touchpad_dev: Device, mut uinput_dev: VirtualDevice) ->
                     ),
                     InputEvent::new(EventType::KEY.0, KeyCode::BTN_LEFT.0, 0),
                 ])?;
+            }
+            Gesture::DragStart => {
+                debug!("Drag started!");
+                uinput_dev.emit(&[InputEvent::new(EventType::KEY.0, KeyCode::BTN_LEFT.0, 1)])?;
+            }
+            Gesture::DragEnd => {
+                debug!("Drag ended!");
+                uinput_dev.emit(&[InputEvent::new(EventType::KEY.0, KeyCode::BTN_LEFT.0, 0)])?;
             }
         }
     }
