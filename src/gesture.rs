@@ -1,17 +1,20 @@
 use std::{
     sync::mpsc::{self, RecvTimeoutError},
     thread,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use evdev::Device;
 use smallvec::{SmallVec, smallvec};
+use tracing::warn;
 
 use crate::state::{TouchState, TouchStateTracker};
 
 const SINGLE_CLICK_TIMEOUT: Duration = Duration::from_millis(100);
 const DOUBLE_CLICK_DRAG_TIMEOUT: Duration = Duration::from_millis(200);
 const LONG_CLICK_DURATION: Duration = Duration::from_secs(1);
+
+const INVALID_DURATION: Duration = Duration::from_secs(u64::MAX);
 
 #[derive(Debug)]
 pub(crate) enum Gesture {
@@ -46,7 +49,7 @@ pub(crate) struct GestureDetector {
 
 impl GestureDetector {
     pub(crate) fn new(touchpad_dev: Device) -> GestureDetector {
-        let (event_tx, event_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::sync_channel(16);
         thread::spawn(move || {
             let tracker = TouchStateTracker::new(touchpad_dev);
 
@@ -90,7 +93,18 @@ impl Iterator for GestureDetector {
             };
 
             let touch = match self.event_rx.recv_timeout(timeout) {
-                Ok(Ok(touch)) => touch,
+                Ok(Ok(touch)) => {
+                    if SystemTime::now()
+                        .duration_since(touch.timestamp)
+                        .unwrap_or(INVALID_DURATION)
+                        > Duration::from_secs(1)
+                    {
+                        warn!("Received event that's way too old, ignoring");
+                        continue;
+                    } else {
+                        touch
+                    }
+                }
                 Ok(Err(e)) => return Some(smallvec![Err(e)]),
                 Err(RecvTimeoutError::Timeout) if self.single_click_pending => {
                     self.single_click_pending = false;
@@ -118,7 +132,7 @@ impl Iterator for GestureDetector {
                 if touch
                     .timestamp
                     .duration_since(self.last_touch.as_ref().unwrap().timestamp)
-                    .unwrap()
+                    .unwrap_or(INVALID_DURATION)
                     >= DOUBLE_CLICK_DRAG_TIMEOUT
                 {
                     // Just a single click
@@ -142,7 +156,7 @@ impl Iterator for GestureDetector {
                     && touch
                         .timestamp
                         .duration_since(first_down.timestamp)
-                        .unwrap()
+                        .unwrap_or(INVALID_DURATION)
                         >= LONG_CLICK_DURATION
                     && self.delta_x_abs_acc < 50
                     && self.delta_y_abs_acc < 50
@@ -166,7 +180,7 @@ impl Iterator for GestureDetector {
                 && touch
                     .timestamp
                     .duration_since(first_down.timestamp)
-                    .unwrap()
+                    .unwrap_or(INVALID_DURATION)
                     < SINGLE_CLICK_TIMEOUT
             {
                 self.single_click_pending = true;
