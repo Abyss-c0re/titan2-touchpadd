@@ -34,7 +34,7 @@ fn main() -> eyre::Result<()> {
 
     info!("Detecting Titan 2's touchpad input...");
 
-    let (Some(touchpad_dev), Some(keyboard_dev)) = find_touchpad_and_keyboard_dev()? else {
+    let (Some(mut touchpad_dev), Some(keyboard_dev)) = find_touchpad_and_keyboard_dev()? else {
         error!("No touchpad or keyboard devices found, exitting");
         return Err(eyre!("No touchpad device found"));
     };
@@ -68,6 +68,12 @@ fn main() -> eyre::Result<()> {
             .to_str()
             .ok_or_eyre("can't decode pathbuf")?
     );
+
+    if let Err(e) = touchpad_dev.grab() {
+        warn!(
+            "Unable to grab touchpad device, continuing but there might be conflicts with system gestures: {e:?}"
+        );
+    }
 
     evloop::run_evloop(touchpad_dev, keyboard_dev, uinput_dev)
 }
