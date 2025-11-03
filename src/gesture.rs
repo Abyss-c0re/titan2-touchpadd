@@ -11,8 +11,14 @@ use tracing::{info, warn};
 
 use crate::state::{TouchState, TouchStateTracker};
 
+/// Maximum time elapsed between a single pair of touch down - touch up events
+/// which we would consider a single click.
 const SINGLE_CLICK_TIMEOUT: Duration = Duration::from_millis(200);
+/// Maximum time elapsed between the first single click and a subsequent tap
+/// which we would consider the start of a drag gesture.
 const DOUBLE_CLICK_DRAG_TIMEOUT: Duration = Duration::from_millis(200);
+/// Minimum time elapsed after a touch down event without significant movement
+/// which we would consider a long click.
 const LONG_CLICK_DURATION: Duration = Duration::from_secs(1);
 
 const INVALID_DURATION: Duration = Duration::from_secs(u64::MAX);
