@@ -109,6 +109,11 @@ impl GestureDetector {
             max_y,
         })
     }
+
+    fn no_significant_movement_since_down(&self) -> bool {
+        (self.delta_x_abs_acc as f64) < self.max_x as f64 * NO_MOVEMENT_THRESHOLD
+            && (self.delta_y_abs_acc as f64) < self.max_y as f64 * NO_MOVEMENT_THRESHOLD
+    }
 }
 
 impl Iterator for GestureDetector {
@@ -152,10 +157,7 @@ impl Iterator for GestureDetector {
                 // Timed out after the first down event, we may have a long click
                 Err(RecvTimeoutError::Timeout) if self.first_down.is_some() => {
                     // We do still need to verify the delta x and y accumulators to ensure we haven't moved much
-                    if (self.delta_x_abs_acc as f64) < self.max_x as f64 * NO_MOVEMENT_THRESHOLD
-                        && (self.delta_y_abs_acc as f64) < self.max_y as f64 * NO_MOVEMENT_THRESHOLD
-                        && !self.long_click_emitted
-                    {
+                    if self.no_significant_movement_since_down() && !self.long_click_emitted {
                         self.long_click_emitted = true;
                         return Some(smallvec![Ok(Gesture::LongClick)]);
                     } else {
@@ -198,8 +200,7 @@ impl Iterator for GestureDetector {
                     .duration_since(first_down.timestamp)
                     .unwrap_or(INVALID_DURATION)
                     >= LONG_CLICK_DURATION
-                    && (self.delta_x_abs_acc as f64) < self.max_x as f64 * NO_MOVEMENT_THRESHOLD
-                    && (self.delta_y_abs_acc as f64) < self.max_y as f64 * NO_MOVEMENT_THRESHOLD
+                    && self.no_significant_movement_since_down()
                     && !self.long_click_emitted
                 {
                     // This is a long click
@@ -229,6 +230,7 @@ impl Iterator for GestureDetector {
             if let Some(ref first_down) = self.first_down
                 && !touch.down
                 && !self.dragging
+                && self.no_significant_movement_since_down()
                 && touch
                     .timestamp
                     .duration_since(first_down.timestamp)
