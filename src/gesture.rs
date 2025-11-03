@@ -143,13 +143,15 @@ impl Iterator for GestureDetector {
                     }
                 }
                 Ok(Err(e)) => return Some(smallvec![Err(e)]),
+                // Timed out after a single click, meaning that it truly was just a single click (not a double-click-to-drag)
                 Err(RecvTimeoutError::Timeout) if self.single_click_pending => {
                     self.single_click_pending = false;
                     // Now emit a single click
                     return Some(smallvec![Ok(Gesture::Click)]);
                 }
+                // Timed out after the first down event, we may have a long click
                 Err(RecvTimeoutError::Timeout) if self.first_down.is_some() => {
-                    // Nothing happened since the last down event, which means this may be a long click
+                    // We do still need to verify the delta x and y accumulators to ensure we haven't moved much
                     if (self.delta_x_abs_acc as f64) < self.max_x as f64 * NO_MOVEMENT_THRESHOLD
                         && (self.delta_y_abs_acc as f64) < self.max_y as f64 * NO_MOVEMENT_THRESHOLD
                         && !self.long_click_emitted
@@ -185,6 +187,7 @@ impl Iterator for GestureDetector {
             // Reset the flag -- we don't need it if we got here at all
             self.single_click_pending = false;
 
+            // The finger has been down for a while, could be a long click or just regular pointer movement
             if touch.down
                 && let Some(ref last_touch) = self.last_touch
                 && last_touch.down
@@ -220,6 +223,9 @@ impl Iterator for GestureDetector {
                 }
             }
 
+            // The finger just tapped once (down then up before SINGLE_CLICK_TIMEOUT)
+            // but we can't emit a single click just yet because this may be the start of a
+            // double-click-to-drag.
             if let Some(ref first_down) = self.first_down
                 && !touch.down
                 && !self.dragging
