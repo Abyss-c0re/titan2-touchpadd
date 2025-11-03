@@ -11,7 +11,7 @@ use tracing::{info, warn};
 
 use crate::state::{TouchState, TouchStateTracker};
 
-const SINGLE_CLICK_TIMEOUT: Duration = Duration::from_millis(100);
+const SINGLE_CLICK_TIMEOUT: Duration = Duration::from_millis(200);
 const DOUBLE_CLICK_DRAG_TIMEOUT: Duration = Duration::from_millis(200);
 const LONG_CLICK_DURATION: Duration = Duration::from_secs(1);
 
