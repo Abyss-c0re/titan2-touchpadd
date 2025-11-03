@@ -1,11 +1,12 @@
 use std::{
+    collections::{HashMap, hash_map::Entry},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, RecvTimeoutError},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use evdev::{
@@ -16,21 +17,68 @@ use tracing::{debug, info, warn};
 
 use crate::gesture::{Gesture, GestureDetector};
 
-// Every key press rejects touch events for this long
+/// Every key press rejects touch events for this long
 const KEYBOARD_TOUCH_REJECTION_TIMEOUT: Duration = Duration::from_millis(500);
 
-fn run_keyboard_touch_rejection_loop(mut keyboard_dev: Device) -> Arc<AtomicBool> {
+/// How quickly does a key have to be pressed to be considered "double pressed"
+const KEYBOARD_DOUBLE_PRESS_TIMEOUT: Duration = Duration::from_millis(200);
+
+/// Which keys can be double pressed to get their state temporarily "locked"?
+const KEYBOARD_LOCKABLE_KEYS: [u16; 3] = [
+    251, // The custom FUNCTION key code of Unihertz Titan 2,
+    253, // The custom SYM key code of Unihertz Titan 2,
+    KeyCode::KEY_LEFTSHIFT.0,
+];
+
+fn run_keyboard_loop(
+    mut keyboard_dev: Device,
+    mut keyboard_uinput_dev: Option<VirtualDevice>,
+) -> Arc<AtomicBool> {
+    // Flags used to inhibit touch around key press (used even if keyboard remap features aren't enabled)
     let flag = Arc::new(AtomicBool::new(false));
     let _flag = flag.clone();
 
     let (key_tx, key_rx) = mpsc::sync_channel(16);
 
     thread::spawn(move || {
+        let mut last_lockable_key_presses = HashMap::new();
+
+        for key in KEYBOARD_LOCKABLE_KEYS {
+            last_lockable_key_presses.insert(key, Instant::now());
+        }
+
         while let Ok(events) = keyboard_dev.fetch_events() {
             for ev in events {
-                // Any key event means we reject
-                if let EventSummary::Key(_, _, _) = ev.destructure() {
+                if let EventSummary::Key(kev, code, value) = ev.destructure() {
+                    // Tell the touch side to reject input events for a while
                     key_tx.try_send(()).ok();
+
+                    // If we have a keyboard uinput dev it means we have keyboard features enabled
+                    // Currently it just means a couple keys can be double-clicked to get their states locked
+                    if let Some(ref mut keyboard_uinput_dev) = keyboard_uinput_dev {
+                        // For whatever key we first event the event as-is
+                        keyboard_uinput_dev.emit(&[kev.into()]).ok();
+
+                        // If this key is part of the "lockable" set, check whether it has been pressed in quick succession
+                        // If so, temporarily "lock" its state to pressed until the next press (that happens naturally)
+                        if value == 0
+                            && let Entry::Occupied(mut last_press) =
+                                last_lockable_key_presses.entry(code.code())
+                        {
+                            let now = Instant::now();
+
+                            if now.duration_since(*last_press.get()) < KEYBOARD_DOUBLE_PRESS_TIMEOUT
+                            {
+                                // "Lock" the Fn key. The next press will natually cancel this.
+                                debug!("Key {} locked!", code.code());
+                                keyboard_uinput_dev
+                                    .emit(&[InputEvent::new(EventType::KEY.0, code.code(), 1)])
+                                    .ok();
+                            } else {
+                                *last_press.get_mut() = now;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -62,8 +110,9 @@ pub(crate) fn run_evloop(
     touchpad_dev: Device,
     keyboard_dev: Device,
     mut uinput_dev: VirtualDevice,
+    keyboard_uinput_dev: Option<VirtualDevice>,
 ) -> eyre::Result<()> {
-    let reject_flag = run_keyboard_touch_rejection_loop(keyboard_dev);
+    let reject_flag = run_keyboard_loop(keyboard_dev, keyboard_uinput_dev);
     let detector = GestureDetector::new(touchpad_dev)?;
 
     info!("Main event loop started");

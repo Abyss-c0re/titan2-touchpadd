@@ -34,7 +34,7 @@ fn main() -> eyre::Result<()> {
 
     info!("Detecting Titan 2's touchpad input...");
 
-    let (Some(mut touchpad_dev), Some(keyboard_dev)) = find_touchpad_and_keyboard_dev()? else {
+    let (Some(mut touchpad_dev), Some(mut keyboard_dev)) = find_touchpad_and_keyboard_dev()? else {
         error!("No touchpad or keyboard devices found, exitting");
         return Err(eyre!("No touchpad device found"));
     };
@@ -69,13 +69,42 @@ fn main() -> eyre::Result<()> {
             .ok_or_eyre("can't decode pathbuf")?
     );
 
+    let keyboard_uinput_dev = if let Ok(v) = std::env::var("KEYBOARD_FEATURES")
+        && v == "true"
+    {
+        let mut dev = uinput::VirtualDevice::builder()?
+            .name("TitanKey") // For the keyboard we're really just adding minor features, so we reuse the official device name
+            .with_relative_axes(&uinput_axes)?
+            .with_keys(keyboard_dev.supported_keys().unwrap())?
+            .build()?;
+
+        info!(
+            "Virtual keyboard created at {}",
+            dev.get_syspath()?
+                .to_str()
+                .ok_or_eyre("can't decode pathbuf")?
+        );
+
+        Some(dev)
+    } else {
+        None
+    };
+
     if let Err(e) = touchpad_dev.grab() {
         warn!(
             "Unable to grab touchpad device, continuing but there might be conflicts with system gestures: {e:?}"
         );
     }
 
-    evloop::run_evloop(touchpad_dev, keyboard_dev, uinput_dev)
+    if keyboard_uinput_dev.is_some()
+        && let Err(e) = keyboard_dev.grab()
+    {
+        return Err(eyre!(
+            "Unable to grab the keyboard device when keyboard features are enabled: {e:?}"
+        ));
+    }
+
+    evloop::run_evloop(touchpad_dev, keyboard_dev, uinput_dev, keyboard_uinput_dev)
 }
 
 fn find_touchpad_and_keyboard_dev() -> eyre::Result<(Option<Device>, Option<Device>)> {
