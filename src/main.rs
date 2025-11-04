@@ -6,6 +6,7 @@ use tracing::{error, info, level_filters::LevelFilter, warn};
 use tracing_logcat::{LogcatMakeWriter, LogcatTag};
 use tracing_subscriber::{EnvFilter, fmt::format::Format};
 
+mod constants;
 mod evloop;
 mod gesture;
 mod state;

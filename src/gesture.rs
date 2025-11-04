@@ -9,26 +9,10 @@ use eyre::eyre;
 use smallvec::{SmallVec, smallvec};
 use tracing::{info, warn};
 
-use crate::state::{TouchState, TouchStateTracker};
-
-/// Maximum time elapsed between a single pair of touch down - touch up events
-/// which we would consider a single click.
-const SINGLE_CLICK_TIMEOUT: Duration = Duration::from_millis(200);
-/// Maximum time elapsed between the first single click and a subsequent tap
-/// which we would consider the start of a drag gesture.
-const DOUBLE_CLICK_DRAG_TIMEOUT: Duration = Duration::from_millis(200);
-/// Minimum time elapsed after a touch down event without significant movement
-/// which we would consider a long click.
-const LONG_CLICK_DURATION: Duration = Duration::from_secs(1);
-
-const INVALID_DURATION: Duration = Duration::from_secs(u64::MAX);
-
-/// The threshold (relative to maxmimum values) of what we consider "no movement"
-/// Used for long-click detection
-const NO_MOVEMENT_THRESHOLD: f64 = 0.005;
-
-/// How much of each edge do we consider as the "scrolling" region
-const SCROLL_EDGE_VERTICAL_THRESHOLD: f64 = 0.005;
+use crate::{
+    constants::*,
+    state::{TouchState, TouchStateTracker},
+};
 
 #[derive(Debug)]
 pub(crate) enum Gesture {
