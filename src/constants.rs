@@ -33,3 +33,12 @@ pub const KEYBOARD_LOCKABLE_KEYS: [u16; 3] = [
     253, // The custom SYM key code of Unihertz Titan 2,
     KeyCode::KEY_LEFTSHIFT.0,
 ];
+
+/// Keys that conflict with the "locked" state; these keys don't really work
+/// when one of [KEYBOARD_LOCKABLE_KEYS] are locked, so pressing them will
+/// cancel the locked state.
+pub const KEYBOARD_LOCKED_KEYS_CONFLICTS: [u16; 3] = [
+    KeyCode::KEY_SPACE.0,
+    KeyCode::KEY_BACKSPACE.0,
+    KeyCode::KEY_ENTER.0,
+];
