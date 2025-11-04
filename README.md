@@ -12,7 +12,10 @@ Currently, the following gestures are implemented:
 - Drag: double tap, then drag the finger (without releasing the second tap) along the keyboard
 - Vertical scrolling: tapping and moving a finger along the left or right edges
 
-In addition, this daemon also implements touch rejection when a keyboard key press is detected.
+In addition, this daemon also implements touch rejection when a keyboard key press is detected. When the env variable
+`KEYBOARD_FEATURES` is set to `true`, the following keyboard quality-of-life improvement is also activated:
+
+- Shift (caps), Sym, and Fn keys become "lockable": double-clicking them "locks" them into the pressed state until they are cancelled by another click of the same key or a conflicting key (such as backspace).
 
 Building
 ---
@@ -34,11 +37,8 @@ Usage
 
 You will need to launch this daemon as root or a user that has access to `/dev/input` and `/dev/uinput`, with the
 corresponding SELinux permissions (if on Android). The easiest way to do this on stock is to launch the binary using a terminal
-program with root access like Termux.
-
-You will also need a way to block the original input devices from being used by the OS. Although, on stock ROM if you can disable or
-ignore most of the stock gestures, this will mostly work just fine without conflicts. On custom ROMs, though, you will have to actually block
-the original input devices. On [PeterGSI](https://gitea.angry.im/PeterGSI), this is done via a [patch](https://gitea.angry.im/PeterGSI/patches/src/branch/aosp16/frameworks/native/0007-inputflinger-Allow-ignoring-touch-devices-using-a-sp.patch) to `inputflinger`.
+program with root access like Termux. This program also tries to grab exclusive access to the touchpad input (and the keyboard,
+if `KEYBOARD_FEATURES` is set to `true`) so that it does not conflict with the OS's native gestures.
 
 Here's an example of how to integrate this into an AOSP build:
 
