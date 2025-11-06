@@ -28,10 +28,11 @@ pub const KEYBOARD_TOUCH_REJECTION_TIMEOUT: Duration = Duration::from_millis(500
 pub const KEYBOARD_DOUBLE_PRESS_TIMEOUT: Duration = Duration::from_millis(200);
 
 /// Which keys can be double pressed to get their state temporarily "locked"?
-pub const KEYBOARD_LOCKABLE_KEYS: [u16; 3] = [
+pub const KEYBOARD_LOCKABLE_KEYS: [u16; 4] = [
     251, // The custom FUNCTION key code of Unihertz Titan 2,
     253, // The custom SYM key code of Unihertz Titan 2,
     KeyCode::KEY_LEFTSHIFT.0,
+    KeyCode::KEY_RIGHTALT.0,
 ];
 
 /// Keys that conflict with the "locked" state; these keys don't really work
