@@ -15,7 +15,7 @@ Currently, the following gestures are implemented:
 In addition, this daemon also implements touch rejection when a keyboard key press is detected. When the env variable
 `KEYBOARD_FEATURES` is set to `true`, the following keyboard quality-of-life improvement is also activated:
 
-- Shift (caps), Sym, and Fn keys become "lockable": double-clicking them "locks" them into the pressed state until they are cancelled by another click of the same key or a conflicting key (such as backspace).
+- Shift (caps), Sym, and Fn keys become "sticky": double-clicking them "locks" them into the pressed state until they are cancelled by another click of the same key or a conflicting key (such as backspace).
 
 Building
 ---
