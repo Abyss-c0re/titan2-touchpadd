@@ -9,6 +9,7 @@ use tracing_subscriber::{EnvFilter, fmt::format::Format};
 mod constants;
 mod evloop;
 mod gesture;
+mod keyboard;
 mod state;
 
 fn main() -> eyre::Result<()> {
