@@ -1,14 +1,12 @@
 use std::{
     collections::{HashMap, HashSet, hash_map::Entry},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::mpsc::{self, TryRecvError},
     thread,
     time::Instant,
 };
 
 use evdev::{Device, EventSummary, EventType, InputEvent, uinput::VirtualDevice};
+use eyre::eyre;
 use tracing::{debug, error};
 
 use crate::{constants::*, gesture::TouchGestureInhibitor};
@@ -17,11 +15,7 @@ pub(crate) struct KeyboardHandler {
     keyboard_dev: Device,
     keyboard_uinput_dev: Option<VirtualDevice>,
 
-    /// State tracker of all keys on the keyboard, true = down
-    keyboard_state: HashMap<u16, bool>,
-
-    // Is any key currently physically down? This does not account for "sticky" or lockable keys below
-    any_key_down: Arc<AtomicBool>,
+    key_tx: mpsc::Sender<(u16, bool)>,
 
     /// For "lockable" (or sticky) keys, stores when each of them was last pressed.
     last_lockable_key_presses: HashMap<u16, Instant>,
@@ -35,11 +29,12 @@ impl KeyboardHandler {
         keyboard_dev: Device,
         keyboard_uinput_dev: Option<VirtualDevice>,
     ) -> impl TouchGestureInhibitor {
+        let (key_tx, key_rx) = mpsc::channel();
+
         let handler = KeyboardHandler {
             keyboard_dev,
             keyboard_uinput_dev,
-            keyboard_state: HashMap::new(),
-            any_key_down: Arc::new(AtomicBool::new(false)),
+            key_tx,
             last_lockable_key_presses: {
                 let mut h = HashMap::new();
                 for key in KEYBOARD_LOCKABLE_KEYS {
@@ -51,7 +46,8 @@ impl KeyboardHandler {
         };
 
         let inhibitor = KeyboardTouchInhibitor {
-            any_key_down: handler.any_key_down.clone(),
+            key_rx,
+            keyboard_state: HashMap::new(),
         };
 
         thread::spawn(move || {
@@ -68,9 +64,7 @@ impl KeyboardHandler {
             for ev in self.keyboard_dev.fetch_events()? {
                 if let EventSummary::Key(kev, code, value) = ev.destructure() {
                     // Tell the touch side to reject input events for a while
-                    self.keyboard_state.insert(code.code(), value == 1);
-                    self.any_key_down
-                        .store(self.keyboard_state.values().any(|v| *v), Ordering::SeqCst);
+                    self.key_tx.send((code.code(), value == 1))?;
 
                     // If we have a keyboard uinput dev it means we have keyboard features enabled
                     // Currently it just means a couple keys can be double-clicked to get their states locked
@@ -121,11 +115,35 @@ impl KeyboardHandler {
 }
 
 pub(crate) struct KeyboardTouchInhibitor {
-    any_key_down: Arc<AtomicBool>,
+    /// State tracker of all keys on the keyboard, true = down
+    keyboard_state: HashMap<u16, bool>,
+    key_rx: mpsc::Receiver<(u16, bool)>,
+}
+
+impl KeyboardTouchInhibitor {
+    fn handle_key(&mut self, key: u16, state: bool) {
+        self.keyboard_state.insert(key, state);
+    }
+
+    fn should_inhibit(&self) -> bool {
+        self.keyboard_state.values().any(|v| *v)
+    }
 }
 
 impl TouchGestureInhibitor for KeyboardTouchInhibitor {
-    fn should_inhibit(&self) -> bool {
-        self.any_key_down.load(Ordering::SeqCst)
+    fn next_should_inhibit(&mut self) -> eyre::Result<bool> {
+        let (key, state) = self.key_rx.recv()?;
+        self.handle_key(key, state);
+
+        // Handle any additiona key events we can handle immediately
+        loop {
+            match self.key_rx.try_recv() {
+                Ok((key, state)) => self.handle_key(key, state),
+                Err(TryRecvError::Disconnected) => return Err(eyre!("disconnected, aborting")),
+                Err(TryRecvError::Empty) => break,
+            }
+        }
+
+        Ok(self.should_inhibit())
     }
 }

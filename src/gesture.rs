@@ -1,5 +1,8 @@
 use std::{
-    sync::mpsc::{self, RecvTimeoutError, TrySendError},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, RecvTimeoutError, TrySendError},
+    },
     thread,
     time::{Duration, SystemTime},
 };
@@ -14,7 +17,7 @@ use crate::{
 };
 
 pub(crate) trait TouchGestureInhibitor: Send {
-    fn should_inhibit(&self) -> bool;
+    fn next_should_inhibit(&mut self) -> eyre::Result<bool>;
 }
 
 #[derive(Debug)]
@@ -43,8 +46,10 @@ pub(crate) enum SwipeGesture {
     Down,
 }
 
+#[derive(Default)]
 enum GestureInhibitionStatus {
     /// No inhibition whatsoever
+    #[default]
     Normal,
     /// Actively inhibited
     Inhibited,
@@ -52,9 +57,40 @@ enum GestureInhibitionStatus {
     WaitingForUp,
 }
 
-pub(crate) struct GestureDetector<I: 'static + TouchGestureInhibitor> {
-    inhibitor: I,
-    inhibition_status: GestureInhibitionStatus,
+#[derive(Clone, Default)]
+struct GestureInhibition(Arc<Mutex<GestureInhibitionStatus>>);
+
+impl GestureInhibition {
+    fn should_inhibit(&self, ev: Option<&TouchState>) -> bool {
+        let mut lock = self.0.lock().unwrap();
+        match *lock {
+            GestureInhibitionStatus::Normal => false,
+            GestureInhibitionStatus::Inhibited => true,
+            GestureInhibitionStatus::WaitingForUp => match ev {
+                Some(ev) => {
+                    if ev.down {
+                        true
+                    } else {
+                        *lock = GestureInhibitionStatus::Normal;
+                        false
+                    }
+                }
+                None => true,
+            },
+        }
+    }
+
+    fn inhibit(&self) {
+        *self.0.lock().unwrap() = GestureInhibitionStatus::Inhibited;
+    }
+
+    fn uninhibit(&self) {
+        *self.0.lock().unwrap() = GestureInhibitionStatus::WaitingForUp
+    }
+}
+
+pub(crate) struct GestureDetector {
+    inhibition: GestureInhibition,
     event_rx: mpsc::Receiver<eyre::Result<TouchState>>,
     gesture_tx: mpsc::SyncSender<eyre::Result<Gesture>>,
     last_touch: Option<TouchState>,
@@ -77,10 +113,10 @@ pub(crate) struct GestureDetector<I: 'static + TouchGestureInhibitor> {
     long_click_emitted: bool,
 }
 
-impl<I: 'static + TouchGestureInhibitor> GestureDetector<I> {
-    pub(crate) fn start(
+impl GestureDetector {
+    pub(crate) fn start<I: 'static + TouchGestureInhibitor>(
         touchpad_dev: Device,
-        inhibitor: I,
+        mut inhibitor: I,
     ) -> eyre::Result<impl Iterator<Item = eyre::Result<Gesture>>> {
         // First acquire some basic properties of the device
         let mut max_x = -1;
@@ -111,11 +147,25 @@ impl<I: 'static + TouchGestureInhibitor> GestureDetector<I> {
             }
         });
 
+        let inhibition = GestureInhibition::default();
+        let _inhibition = inhibition.clone();
+
+        thread::spawn(move || {
+            while let Ok(inhibit) = inhibitor.next_should_inhibit() {
+                if inhibit {
+                    debug!("Touch inhibition started!");
+                    _inhibition.inhibit();
+                } else {
+                    debug!("Touch inhibition ended! But might still need a touch up event!");
+                    _inhibition.uninhibit();
+                }
+            }
+        });
+
         let (gesture_tx, gesture_rx) = mpsc::sync_channel(16);
 
         let state = GestureDetector {
-            inhibitor,
-            inhibition_status: GestureInhibitionStatus::Normal,
+            inhibition,
             event_rx,
             gesture_tx,
             last_touch: None,
@@ -157,10 +207,13 @@ impl<I: 'static + TouchGestureInhibitor> GestureDetector<I> {
 
             let touch = self.event_rx.recv_timeout(timeout);
 
-            if self.inhibitor.should_inhibit() {
-                debug!("Touch temporarily inhibited, resetting state and ignoring");
-                self.reset_state()?;
-                self.inhibition_status = GestureInhibitionStatus::Inhibited;
+            if self
+                .inhibition
+                .should_inhibit(touch.as_ref().ok().and_then(|inner| inner.as_ref().ok()))
+            {
+                debug!("Input still inhibited!");
+                // We also need to drop any pending clicks here
+                self.reset_state(true)?;
                 continue;
             }
 
@@ -174,31 +227,6 @@ impl<I: 'static + TouchGestureInhibitor> GestureDetector<I> {
                         warn!("Received event that's way too old, ignoring");
                         continue;
                     } else {
-                        match self.inhibition_status {
-                            GestureInhibitionStatus::WaitingForUp => {
-                                if touch.down {
-                                    // Haven't seen an up event yet
-                                    debug!("Still needs an up event to resume touch!");
-                                    continue;
-                                } else {
-                                    debug!("Seen finger up! Fully cancelling inhibition");
-                                    self.inhibition_status = GestureInhibitionStatus::Normal
-                                }
-                            }
-                            GestureInhibitionStatus::Inhibited => {
-                                if touch.down {
-                                    // We're no longer being inhibited, but we need to observe an up event
-                                    debug!("No longer inhibited, waiting for up event");
-                                    self.inhibition_status = GestureInhibitionStatus::WaitingForUp;
-                                    continue;
-                                } else {
-                                    debug!("No longer inhibited!");
-                                    self.inhibition_status = GestureInhibitionStatus::Normal
-                                }
-                            }
-                            _ => {}
-                        }
-
                         touch
                     }
                 }
@@ -318,7 +346,7 @@ impl<I: 'static + TouchGestureInhibitor> GestureDetector<I> {
                     self.emit(Ok(Gesture::Swipe(swipe)))?;
                 }
 
-                self.reset_state()?;
+                self.reset_state(false)?;
             }
         }
     }
@@ -337,7 +365,7 @@ impl<I: 'static + TouchGestureInhibitor> GestureDetector<I> {
         Ok(())
     }
 
-    fn reset_state(&mut self) -> eyre::Result<()> {
+    fn reset_state(&mut self, clear_single_click: bool) -> eyre::Result<()> {
         if self.dragging {
             // if we're resetting state, we also need to tell everyone that we have stopped dragging
             // because dragging is a state that needs to be synchronized with consumers
@@ -351,6 +379,12 @@ impl<I: 'static + TouchGestureInhibitor> GestureDetector<I> {
         self.delta_x_acc = 0;
         self.delta_y_acc = 0;
         self.long_click_emitted = false;
+
+        // This flag is set if we truly want to clear _all_ state, for example, when input inhibition
+        // is triggered. It is _not_ set when we just want to reset most of the state when the finger lifts.
+        if clear_single_click {
+            self.single_click_pending = false;
+        }
 
         Ok(())
     }
