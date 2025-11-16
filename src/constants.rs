@@ -12,6 +12,9 @@ pub const DOUBLE_CLICK_DRAG_TIMEOUT: Duration = Duration::from_millis(200);
 /// which we would consider a long click.
 pub const LONG_CLICK_DURATION: Duration = Duration::from_secs(1);
 
+pub const SWIPE_DURATION: Duration = Duration::from_millis(200);
+pub const SWIPE_SPEED_THRESHOLD: f64 = 1.0;
+
 pub const INVALID_DURATION: Duration = Duration::from_secs(u64::MAX);
 
 /// The threshold (relative to maxmimum values) of what we consider "no movement"

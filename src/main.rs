@@ -53,6 +53,10 @@ fn main() -> eyre::Result<()> {
         let mut keys = AttributeSet::new();
         keys.insert(KeyCode::BTN_LEFT);
         keys.insert(KeyCode::BTN_RIGHT);
+        keys.insert(KeyCode::KEY_LEFT);
+        keys.insert(KeyCode::KEY_RIGHT);
+        keys.insert(KeyCode::KEY_UP);
+        keys.insert(KeyCode::KEY_DOWN);
         keys
     };
 

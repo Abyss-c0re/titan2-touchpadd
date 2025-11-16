@@ -27,6 +27,16 @@ pub(crate) enum Gesture {
     DragEnd,
     /// Vertical scrolling
     VerticalScroll(i32),
+    /// Swiping
+    Swipe(SwipeGesture),
+}
+
+#[derive(Debug)]
+pub(crate) enum SwipeGesture {
+    Left,
+    Right,
+    Up,
+    Down,
 }
 
 pub(crate) struct GestureDetector {
@@ -40,6 +50,9 @@ pub(crate) struct GestureDetector {
     /// This is used to detect long-tap-to-right-click
     delta_x_abs_acc: u32,
     delta_y_abs_acc: u32,
+    /// Same but not absolute values
+    delta_x_acc: i32,
+    delta_y_acc: i32,
     /// If true, we have seen a single click and are waiting for further
     /// events to decide whether this is "just" a single click or the start
     /// of a double-click-and-drag gesture
@@ -91,6 +104,8 @@ impl GestureDetector {
             first_down: None,
             delta_x_abs_acc: 0,
             delta_y_abs_acc: 0,
+            delta_x_acc: 0,
+            delta_y_acc: 0,
             single_click_pending: false,
             dragging: false,
             long_click_emitted: false,
@@ -201,17 +216,20 @@ impl GestureDetector {
                     let delta_x = touch.x - last_touch.x;
                     let delta_y = touch.y - last_touch.y;
 
+                    self.delta_x_abs_acc += delta_x.abs() as u32;
+                    self.delta_y_abs_acc += delta_y.abs() as u32;
+                    self.delta_x_acc += delta_x;
+                    self.delta_y_acc += delta_y;
+
                     if (first_down.x as f64) < self.max_x as f64 * SCROLL_EDGE_VERTICAL_THRESHOLD
                         || ((self.max_x - first_down.x) as f64)
                             < self.max_x as f64 * SCROLL_EDGE_VERTICAL_THRESHOLD
                     {
                         // This is vertical scroll (left or right edge)
                         self.emit(Ok(Gesture::VerticalScroll(delta_y)))?;
-                    } else {
+                    } else if self.try_detect_swipe(touch.timestamp).is_none() {
                         self.emit(Ok(Gesture::PointerMove(delta_x, delta_y)))?;
                     }
-                    self.delta_x_abs_acc += delta_x.abs() as u32;
-                    self.delta_y_abs_acc += delta_y.abs() as u32;
                 }
             }
 
@@ -222,6 +240,7 @@ impl GestureDetector {
                 && !touch.down
                 && !self.dragging
                 && self.no_significant_movement_since_down()
+                && self.try_detect_swipe(touch.timestamp).is_none()
                 && touch
                     .timestamp
                     .duration_since(first_down.timestamp)
@@ -243,10 +262,16 @@ impl GestureDetector {
                     self.first_down = Some(touch.clone());
                 }
             } else {
+                if let Some(swipe) = self.try_detect_swipe(touch.timestamp) {
+                    self.emit(Ok(Gesture::Swipe(swipe)))?;
+                }
+
                 self.first_down = None;
                 // These states also need to be reset if the finger is lifted
                 self.delta_x_abs_acc = 0;
                 self.delta_y_abs_acc = 0;
+                self.delta_x_acc = 0;
+                self.delta_y_acc = 0;
                 self.long_click_emitted = false;
             }
         }
@@ -269,5 +294,61 @@ impl GestureDetector {
     fn no_significant_movement_since_down(&self) -> bool {
         (self.delta_x_abs_acc as f64) < self.max_x as f64 * NO_MOVEMENT_THRESHOLD
             && (self.delta_y_abs_acc as f64) < self.max_y as f64 * NO_MOVEMENT_THRESHOLD
+    }
+
+    fn try_detect_swipe(&self, now: SystemTime) -> Option<SwipeGesture> {
+        if self.dragging {
+            return None;
+        }
+
+        let Some(ref first_down) = self.first_down else {
+            return None;
+        };
+
+        let Ok(dur) = now.duration_since(first_down.timestamp) else {
+            return None;
+        };
+
+        if dur >= SWIPE_DURATION {
+            return None;
+        }
+
+        // We really want the same speed to apply to both X and Y directions,
+        // so choose the wider direction as baseline
+        let speed_ref = std::cmp::max(self.max_x, self.max_y) as f64;
+
+        let speed_x = (self.delta_x_acc as f64 / dur.as_secs_f64()) / speed_ref;
+
+        let res_x = if speed_x > SWIPE_SPEED_THRESHOLD {
+            Some(SwipeGesture::Right)
+        } else if speed_x < -SWIPE_SPEED_THRESHOLD {
+            Some(SwipeGesture::Left)
+        } else {
+            None
+        };
+
+        let speed_y = (self.delta_y_acc as f64 / dur.as_secs_f64()) / speed_ref;
+
+        let res_y = if speed_y > SWIPE_SPEED_THRESHOLD {
+            Some(SwipeGesture::Down)
+        } else if speed_y < -SWIPE_SPEED_THRESHOLD {
+            Some(SwipeGesture::Up)
+        } else {
+            None
+        };
+
+        match (res_x, res_y) {
+            (None, None) => None,
+            (Some(res_x), None) => Some(res_x),
+            (None, Some(res_y)) => Some(res_y),
+            (Some(res_x), Some(res_y)) => {
+                // Choose the direction with bigger absolute speed
+                if speed_x.abs() > speed_y.abs() {
+                    Some(res_x)
+                } else {
+                    Some(res_y)
+                }
+            }
+        }
     }
 }

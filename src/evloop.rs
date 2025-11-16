@@ -17,7 +17,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     constants::*,
-    gesture::{Gesture, GestureDetector},
+    gesture::{Gesture, GestureDetector, SwipeGesture},
 };
 
 fn run_keyboard_loop(
@@ -184,6 +184,26 @@ pub(crate) fn run_evloop(
                     RelativeAxisCode::REL_WHEEL_HI_RES.0,
                     val,
                 )])?;
+            }
+            Gesture::Swipe(swipe) => {
+                debug!("Swipe!");
+
+                let key = match swipe {
+                    SwipeGesture::Left => KeyCode::KEY_LEFT,
+                    SwipeGesture::Right => KeyCode::KEY_RIGHT,
+                    SwipeGesture::Up => KeyCode::KEY_UP,
+                    SwipeGesture::Down => KeyCode::KEY_DOWN,
+                };
+
+                uinput_dev.emit(&[
+                    InputEvent::new(EventType::KEY.0, key.code(), 1),
+                    InputEvent::new(
+                        EventType::SYNCHRONIZATION.0,
+                        SynchronizationCode::SYN_REPORT.0,
+                        0,
+                    ),
+                    InputEvent::new(EventType::KEY.0, key.code(), 0),
+                ])?;
             }
         }
     }
