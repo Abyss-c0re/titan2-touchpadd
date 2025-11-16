@@ -43,8 +43,18 @@ pub(crate) enum SwipeGesture {
     Down,
 }
 
+enum GestureInhibitionStatus {
+    /// No inhibition whatsoever
+    Normal,
+    /// Actively inhibited
+    Inhibited,
+    /// Not inhibited anymore, but we still need to see a finger up event to fully cancel inhibition
+    WaitingForUp,
+}
+
 pub(crate) struct GestureDetector<I: 'static + TouchGestureInhibitor> {
     inhibitor: I,
+    inhibition_status: GestureInhibitionStatus,
     event_rx: mpsc::Receiver<eyre::Result<TouchState>>,
     gesture_tx: mpsc::SyncSender<eyre::Result<Gesture>>,
     last_touch: Option<TouchState>,
@@ -105,6 +115,7 @@ impl<I: 'static + TouchGestureInhibitor> GestureDetector<I> {
 
         let state = GestureDetector {
             inhibitor,
+            inhibition_status: GestureInhibitionStatus::Normal,
             event_rx,
             gesture_tx,
             last_touch: None,
@@ -155,6 +166,7 @@ impl<I: 'static + TouchGestureInhibitor> GestureDetector<I> {
             if self.inhibitor.should_inhibit(now) {
                 debug!("Touch temporarily inhibited, resetting state and ignoring");
                 self.reset_state()?;
+                self.inhibition_status = GestureInhibitionStatus::Inhibited;
                 continue;
             }
 
@@ -168,6 +180,31 @@ impl<I: 'static + TouchGestureInhibitor> GestureDetector<I> {
                         warn!("Received event that's way too old, ignoring");
                         continue;
                     } else {
+                        match self.inhibition_status {
+                            GestureInhibitionStatus::WaitingForUp => {
+                                if touch.down {
+                                    // Haven't seen an up event yet
+                                    debug!("Still needs an up event to resume touch!");
+                                    continue;
+                                } else {
+                                    debug!("Seen finger up! Fully cancelling inhibition");
+                                    self.inhibition_status = GestureInhibitionStatus::Normal
+                                }
+                            }
+                            GestureInhibitionStatus::Inhibited => {
+                                if touch.down {
+                                    // We're no longer being inhibited, but we need to observe an up event
+                                    debug!("No longer inhibited, waiting for up event");
+                                    self.inhibition_status = GestureInhibitionStatus::WaitingForUp;
+                                    continue;
+                                } else {
+                                    debug!("No longer inhibited!");
+                                    self.inhibition_status = GestureInhibitionStatus::Normal
+                                }
+                            }
+                            _ => {}
+                        }
+
                         touch
                     }
                 }
