@@ -10,42 +10,89 @@ use std::{
 };
 
 use evdev::{Device, EventSummary, EventType, InputEvent, uinput::VirtualDevice};
-use tracing::debug;
+use tracing::{debug, error};
 
 use crate::constants::*;
 
-pub(crate) fn run_keyboard_loop(
-    mut keyboard_dev: Device,
-    mut keyboard_uinput_dev: Option<VirtualDevice>,
-) -> Arc<AtomicBool> {
-    // Flags used to inhibit touch around key press (used even if keyboard remap features aren't enabled)
-    let flag = Arc::new(AtomicBool::new(false));
-    let _flag = flag.clone();
+pub(crate) struct KeyboardHandler {
+    keyboard_dev: Device,
+    keyboard_uinput_dev: Option<VirtualDevice>,
+    key_tx: mpsc::SyncSender<()>,
 
-    let (key_tx, key_rx) = mpsc::sync_channel(16);
+    /// For "lockable" (or sticky) keys, stores when each of them was last pressed.
+    last_lockable_key_presses: HashMap<u16, Instant>,
 
-    thread::spawn(move || {
-        let mut last_lockable_key_presses = HashMap::new();
-        let mut locked_keys = HashSet::new();
+    /// The set of all keys that are currently "locked" down
+    locked_keys: HashSet<u16>,
+}
 
-        for key in KEYBOARD_LOCKABLE_KEYS {
-            last_lockable_key_presses.insert(key, Instant::now());
-        }
+impl KeyboardHandler {
+    pub fn start(
+        keyboard_dev: Device,
+        keyboard_uinput_dev: Option<VirtualDevice>,
+    ) -> Arc<AtomicBool> {
+        let flag = Arc::new(AtomicBool::new(false));
+        let _flag = flag.clone();
 
-        while let Ok(events) = keyboard_dev.fetch_events() {
-            for ev in events {
+        let (key_tx, key_rx) = mpsc::sync_channel(16);
+
+        let handler = KeyboardHandler {
+            keyboard_dev,
+            keyboard_uinput_dev,
+            key_tx,
+            last_lockable_key_presses: {
+                let mut h = HashMap::new();
+                for key in KEYBOARD_LOCKABLE_KEYS {
+                    h.insert(key, Instant::now());
+                }
+                h
+            },
+            locked_keys: HashSet::new(),
+        };
+
+        thread::spawn(move || {
+            if let Err(e) = handler.run() {
+                error!("keyboard handler loop exitted abnormally: {e:?}");
+            }
+        });
+
+        thread::spawn(move || {
+            loop {
+                let timeout = if _flag.load(Ordering::Relaxed) {
+                    KEYBOARD_TOUCH_REJECTION_TIMEOUT
+                } else {
+                    Duration::from_secs(86400)
+                };
+
+                match key_rx.recv_timeout(timeout) {
+                    Ok(_) => {
+                        debug!("Keyboard event received, rejecting touch for a while");
+                        _flag.store(true, Ordering::Relaxed)
+                    }
+                    Err(RecvTimeoutError::Timeout) => _flag.store(false, Ordering::Relaxed),
+                    Err(_) => break,
+                }
+            }
+        });
+
+        return flag;
+    }
+
+    fn run(mut self) -> eyre::Result<()> {
+        loop {
+            for ev in self.keyboard_dev.fetch_events()? {
                 if let EventSummary::Key(kev, code, value) = ev.destructure() {
                     // Tell the touch side to reject input events for a while
-                    key_tx.try_send(()).ok();
+                    self.key_tx.try_send(()).ok();
 
                     // If we have a keyboard uinput dev it means we have keyboard features enabled
                     // Currently it just means a couple keys can be double-clicked to get their states locked
-                    if let Some(ref mut keyboard_uinput_dev) = keyboard_uinput_dev {
+                    if let Some(ref mut keyboard_uinput_dev) = self.keyboard_uinput_dev {
                         // Clear all locked keys if a conflicting key is pressed or released
                         if KEYBOARD_LOCKED_KEYS_CONFLICTS.contains(&code.code())
-                            && !locked_keys.is_empty()
+                            && !self.locked_keys.is_empty()
                         {
-                            for locked_key in locked_keys.drain() {
+                            for locked_key in self.locked_keys.drain() {
                                 keyboard_uinput_dev
                                     .emit(&[InputEvent::new(EventType::KEY.0, locked_key, 0)])
                                     .ok();
@@ -59,7 +106,7 @@ pub(crate) fn run_keyboard_loop(
                         // If so, temporarily "lock" its state to pressed until the next press (that happens naturally)
                         if value == 0
                             && let Entry::Occupied(mut last_press) =
-                                last_lockable_key_presses.entry(code.code())
+                                self.last_lockable_key_presses.entry(code.code())
                         {
                             let now = Instant::now();
 
@@ -67,7 +114,7 @@ pub(crate) fn run_keyboard_loop(
                             {
                                 // "Lock" the Fn key. The next press will natually cancel this.
                                 debug!("Key {} locked!", code.code());
-                                locked_keys.insert(code.code());
+                                self.locked_keys.insert(code.code());
                                 keyboard_uinput_dev
                                     .emit(&[InputEvent::new(EventType::KEY.0, code.code(), 1)])
                                     .ok();
@@ -76,33 +123,12 @@ pub(crate) fn run_keyboard_loop(
                                 // Also, we should not consider this key "locked" now
                                 // (Note that the precondition of this whole branch is value == 0, so either it's the start
                                 //  of a locked state, or the key isn't locked at all)
-                                locked_keys.remove(&code.code());
+                                self.locked_keys.remove(&code.code());
                             }
                         }
                     }
                 }
             }
         }
-    });
-
-    thread::spawn(move || {
-        loop {
-            let timeout = if _flag.load(Ordering::Relaxed) {
-                KEYBOARD_TOUCH_REJECTION_TIMEOUT
-            } else {
-                Duration::from_secs(86400)
-            };
-
-            match key_rx.recv_timeout(timeout) {
-                Ok(_) => {
-                    debug!("Keyboard event received, rejecting touch for a while");
-                    _flag.store(true, Ordering::Relaxed)
-                }
-                Err(RecvTimeoutError::Timeout) => _flag.store(false, Ordering::Relaxed),
-                Err(_) => break,
-            }
-        }
-    });
-
-    return flag;
+    }
 }

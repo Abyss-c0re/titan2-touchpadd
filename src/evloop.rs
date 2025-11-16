@@ -6,7 +6,10 @@ use evdev::{
 };
 use tracing::{debug, info, warn};
 
-use crate::gesture::{Gesture, GestureDetector, SwipeGesture};
+use crate::{
+    gesture::{Gesture, GestureDetector, SwipeGesture},
+    keyboard::KeyboardHandler,
+};
 
 pub(crate) fn run_evloop(
     touchpad_dev: Device,
@@ -14,7 +17,7 @@ pub(crate) fn run_evloop(
     mut uinput_dev: VirtualDevice,
     keyboard_uinput_dev: Option<VirtualDevice>,
 ) -> eyre::Result<()> {
-    let reject_flag = crate::keyboard::run_keyboard_loop(keyboard_dev, keyboard_uinput_dev);
+    let reject_flag = KeyboardHandler::start(keyboard_dev, keyboard_uinput_dev);
     let detector = GestureDetector::start(touchpad_dev)?;
 
     info!("Main event loop started");
