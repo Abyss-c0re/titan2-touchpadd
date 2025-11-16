@@ -36,6 +36,8 @@ pub(crate) enum Gesture {
     VerticalScroll(i32),
     /// Swiping
     Swipe(SwipeGesture),
+    /// Double-tap on the top row of keys
+    TopRowDoubleTap(u32),
 }
 
 #[derive(Debug)]
@@ -94,6 +96,7 @@ impl GestureInhibition {
 }
 
 pub(crate) struct GestureDetector {
+    keyboard_features_enabled: bool,
     inhibition: GestureInhibition,
     event_rx: mpsc::Receiver<eyre::Result<TouchState>>,
     gesture_tx: mpsc::SyncSender<eyre::Result<Gesture>>,
@@ -112,6 +115,9 @@ pub(crate) struct GestureDetector {
     /// events to decide whether this is "just" a single click or the start
     /// of a double-click-and-drag gesture
     single_click_pending: bool,
+    /// If true, we have seen the second down event for a double tap on the top row, and are waiting
+    /// for the next up.
+    top_row_double_tap_pending: bool,
     dragging: bool,
     /// Has a long-click been emitted for the current streak of touch down events?
     long_click_emitted: bool,
@@ -119,6 +125,7 @@ pub(crate) struct GestureDetector {
 
 impl GestureDetector {
     pub(crate) fn start<I: 'static + TouchGestureInhibitor>(
+        keyboard_features_enabled: bool,
         touchpad_dev: Device,
         mut inhibitor: I,
     ) -> eyre::Result<impl Iterator<Item = eyre::Result<Gesture>>> {
@@ -169,6 +176,7 @@ impl GestureDetector {
         let (gesture_tx, gesture_rx) = mpsc::sync_channel(16);
 
         let state = GestureDetector {
+            keyboard_features_enabled,
             inhibition,
             event_rx,
             gesture_tx,
@@ -179,6 +187,7 @@ impl GestureDetector {
             delta_x_acc: 0,
             delta_y_acc: 0,
             single_click_pending: false,
+            top_row_double_tap_pending: false,
             dragging: false,
             long_click_emitted: false,
             max_x,
@@ -270,9 +279,16 @@ impl GestureDetector {
                     self.single_click_pending = false;
                     self.emit(Ok(Gesture::Click))?;
                 } else if touch.down {
-                    // Drag started
-                    self.dragging = true;
-                    self.emit(Ok(Gesture::DragStart))?;
+                    if self.keyboard_features_enabled
+                        && touch.y < ((self.max_y as f64) * KEYBOARD_TOP_ROW_HEIGHT) as i32
+                    {
+                        // Double-tap on the top row of keys
+                        self.top_row_double_tap_pending = true;
+                    } else {
+                        // Drag started
+                        self.dragging = true;
+                        self.emit(Ok(Gesture::DragStart))?;
+                    }
                 }
             }
 
@@ -323,6 +339,7 @@ impl GestureDetector {
             if let Some(ref first_down) = self.first_down
                 && !touch.down
                 && !self.dragging
+                && !self.top_row_double_tap_pending
                 && self.no_significant_movement_since_down()
                 && self.try_detect_swipe(touch.timestamp).is_none()
                 && touch
@@ -348,6 +365,25 @@ impl GestureDetector {
             } else {
                 if let Some(swipe) = self.try_detect_swipe(touch.timestamp) {
                     self.emit(Ok(Gesture::Swipe(swipe)))?;
+                } else if self.top_row_double_tap_pending
+                    && touch.y < ((self.max_y as f64) * KEYBOARD_TOP_ROW_HEIGHT) as i32
+                {
+                    // Now that we see an up, this is when we need to emit the top-row double tap event
+                    // (NOT when the down was seen)
+                    let mut key_idx = None;
+                    for i in 0..KEYBOARD_TOP_ROW_KEY_BOUNDS.len() {
+                        let lower_bound = if i == 0 {
+                            0
+                        } else {
+                            KEYBOARD_TOP_ROW_KEY_BOUNDS[i - 1]
+                        };
+                        let upper_bound = KEYBOARD_TOP_ROW_KEY_BOUNDS[i];
+                        // The equal case is required on both ends because we might have an x coordinate of 0 or 1440
+                        if touch.x >= lower_bound && touch.x <= upper_bound {
+                            key_idx = Some(i as u32);
+                        }
+                    }
+                    self.emit(Ok(Gesture::TopRowDoubleTap(key_idx.unwrap())))?
                 }
 
                 self.reset_state(false)?;
@@ -383,6 +419,7 @@ impl GestureDetector {
         self.delta_x_acc = 0;
         self.delta_y_acc = 0;
         self.long_click_emitted = false;
+        self.top_row_double_tap_pending = false;
 
         // This flag is set if we truly want to clear _all_ state, for example, when input inhibition
         // is triggered. It is _not_ set when we just want to reset most of the state when the finger lifts.
@@ -399,7 +436,7 @@ impl GestureDetector {
     }
 
     fn try_detect_swipe(&self, now: SystemTime) -> Option<SwipeGesture> {
-        if self.dragging {
+        if self.dragging || !self.keyboard_features_enabled {
             return None;
         }
 

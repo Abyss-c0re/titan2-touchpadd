@@ -5,18 +5,20 @@ use evdev::{
 use tracing::{debug, info, warn};
 
 use crate::{
+    constants::NUMERIC_KEYCODES,
     gesture::{Gesture, GestureDetector, SwipeGesture},
     keyboard::KeyboardHandler,
 };
 
 pub(crate) fn run_evloop(
+    keyboard_features_enabled: bool,
     touchpad_dev: Device,
     keyboard_dev: Device,
     mut uinput_dev: VirtualDevice,
     keyboard_uinput_dev: Option<VirtualDevice>,
 ) -> eyre::Result<()> {
     let inhibitor = KeyboardHandler::start(keyboard_dev, keyboard_uinput_dev);
-    let detector = GestureDetector::start(touchpad_dev, inhibitor)?;
+    let detector = GestureDetector::start(keyboard_features_enabled, touchpad_dev, inhibitor)?;
 
     info!("Main event loop started");
 
@@ -87,6 +89,19 @@ pub(crate) fn run_evloop(
                     SwipeGesture::Down => KeyCode::KEY_DOWN,
                 };
 
+                uinput_dev.emit(&[
+                    InputEvent::new(EventType::KEY.0, key.code(), 1),
+                    InputEvent::new(
+                        EventType::SYNCHRONIZATION.0,
+                        SynchronizationCode::SYN_REPORT.0,
+                        0,
+                    ),
+                    InputEvent::new(EventType::KEY.0, key.code(), 0),
+                ])?;
+            }
+            Gesture::TopRowDoubleTap(i) => {
+                debug!("Double-tapping top row!");
+                let key = NUMERIC_KEYCODES[i as usize];
                 uinput_dev.emit(&[
                     InputEvent::new(EventType::KEY.0, key.code(), 1),
                     InputEvent::new(

@@ -1,7 +1,7 @@
 use std::time::SystemTime;
 
 use evdev::{AbsoluteAxisCode, Device, EventSummary, KeyCode, SynchronizationCode};
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 #[derive(Clone, Debug)]
 pub(crate) struct TouchState {
@@ -89,6 +89,7 @@ impl Iterator for TouchStateTracker {
                     // This is what Titan 2's touchpad uses
                     if syn_code == SynchronizationCode::SYN_REPORT {
                         let ret = self.try_construct_touch_state();
+                        debug!("Constructed touch state {ret:?}");
                         self.pending_events.clear();
                         return Some(ret);
                     }

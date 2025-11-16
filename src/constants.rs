@@ -46,3 +46,24 @@ pub const KEYBOARD_LOCKED_KEYS_CONFLICTS: [u16; 3] = [
     KeyCode::KEY_BACKSPACE.0,
     KeyCode::KEY_ENTER.0,
 ];
+
+/// The height of the keyboard's top row, as a percentage of total height
+pub const KEYBOARD_TOP_ROW_HEIGHT: f64 = 0.25;
+
+/// Boundaries of keys on the top row of keyboard
+/// The mapping from keyboard to touchpad isn't exactly linear, for whatever reason,
+/// so here's my best attempt at making detecting the corresponding key somewhat usable.
+pub const KEYBOARD_TOP_ROW_KEY_BOUNDS: [i32; 6] = [180, 450, 713, 994, 1254, 1440];
+
+/// All numeric keys we know about, only up to [KEYBOARD_TOP_ROW_NUM_KEYS] will be used
+pub const NUMERIC_KEYCODES: [KeyCode; 9] = [
+    KeyCode::KEY_1,
+    KeyCode::KEY_2,
+    KeyCode::KEY_3,
+    KeyCode::KEY_4,
+    KeyCode::KEY_5,
+    KeyCode::KEY_6,
+    KeyCode::KEY_7,
+    KeyCode::KEY_8,
+    KeyCode::KEY_9,
+];

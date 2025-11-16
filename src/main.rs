@@ -6,6 +6,8 @@ use tracing::{error, info, level_filters::LevelFilter, warn};
 use tracing_logcat::{LogcatMakeWriter, LogcatTag};
 use tracing_subscriber::{EnvFilter, fmt::format::Format};
 
+use crate::constants::NUMERIC_KEYCODES;
+
 mod constants;
 mod evloop;
 mod gesture;
@@ -58,6 +60,12 @@ fn main() -> eyre::Result<()> {
         keys.insert(KeyCode::KEY_RIGHT);
         keys.insert(KeyCode::KEY_UP);
         keys.insert(KeyCode::KEY_DOWN);
+
+        // Top-row virtual numeric keys
+        for i in NUMERIC_KEYCODES {
+            keys.insert(i);
+        }
+
         keys
     };
 
@@ -75,9 +83,11 @@ fn main() -> eyre::Result<()> {
             .ok_or_eyre("can't decode pathbuf")?
     );
 
-    let keyboard_uinput_dev = if let Ok(v) = std::env::var("KEYBOARD_FEATURES")
-        && v == "true"
-    {
+    // Features that remap / simulate keyboard input are guarded behind a feature gate
+    let keyboard_features_enabled =
+        matches!(std::env::var("KEYBOARD_FEATURES"), Ok(v) if v == "true");
+
+    let keyboard_uinput_dev = if keyboard_features_enabled {
         let mut dev = uinput::VirtualDevice::builder()?
             .name("TitanKey") // For the keyboard we're really just adding minor features, so we reuse the official device name
             .with_relative_axes(&uinput_axes)?
@@ -110,7 +120,13 @@ fn main() -> eyre::Result<()> {
         ));
     }
 
-    evloop::run_evloop(touchpad_dev, keyboard_dev, uinput_dev, keyboard_uinput_dev)
+    evloop::run_evloop(
+        keyboard_features_enabled,
+        touchpad_dev,
+        keyboard_dev,
+        uinput_dev,
+        keyboard_uinput_dev,
+    )
 }
 
 fn find_touchpad_and_keyboard_dev() -> eyre::Result<(Option<Device>, Option<Device>)> {
