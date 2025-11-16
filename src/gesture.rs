@@ -65,18 +65,22 @@ impl GestureInhibition {
         let mut lock = self.0.lock().unwrap();
         match *lock {
             GestureInhibitionStatus::Normal => false,
-            GestureInhibitionStatus::Inhibited => true,
-            GestureInhibitionStatus::WaitingForUp => match ev {
-                Some(ev) => {
-                    if ev.down {
-                        true
-                    } else {
-                        *lock = GestureInhibitionStatus::Normal;
-                        false
+            // Even if inhibited, if we see a finger up event, we can cancel touch inhibition
+            // This is because sometimes the finger up event can happen before the corresponding keyboard
+            // key up event.
+            GestureInhibitionStatus::WaitingForUp | GestureInhibitionStatus::Inhibited => {
+                match ev {
+                    Some(ev) => {
+                        if ev.down {
+                            true
+                        } else {
+                            *lock = GestureInhibitionStatus::Normal;
+                            false
+                        }
                     }
+                    None => true,
                 }
-                None => true,
-            },
+            }
         }
     }
 
