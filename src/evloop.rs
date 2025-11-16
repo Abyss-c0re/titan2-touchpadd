@@ -1,5 +1,3 @@
-use std::time::SystemTime;
-
 use evdev::{
     Device, EventType, InputEvent, KeyCode, RelativeAxisCode, SynchronizationCode,
     uinput::VirtualDevice,
@@ -7,7 +5,7 @@ use evdev::{
 use tracing::{debug, info, warn};
 
 use crate::{
-    gesture::{Gesture, GestureDetector, SwipeGesture, TouchGestureInhibitor},
+    gesture::{Gesture, GestureDetector, SwipeGesture},
     keyboard::KeyboardHandler,
 };
 
@@ -18,16 +16,11 @@ pub(crate) fn run_evloop(
     keyboard_uinput_dev: Option<VirtualDevice>,
 ) -> eyre::Result<()> {
     let inhibitor = KeyboardHandler::start(keyboard_dev, keyboard_uinput_dev);
-    let detector = GestureDetector::start(touchpad_dev)?;
+    let detector = GestureDetector::start(touchpad_dev, inhibitor)?;
 
     info!("Main event loop started");
 
     for gesture in detector {
-        if inhibitor.should_inhibit(SystemTime::now()) {
-            debug!("Touch temporarily inhibited");
-            continue;
-        }
-
         let Ok(gesture) = gesture.inspect_err(|e| warn!("Could not construct touch state from events, ignoring the current SYN_REPORT: {:?}", e)) else {
             continue;
         };

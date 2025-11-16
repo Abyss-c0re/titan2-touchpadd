@@ -6,14 +6,14 @@ use std::{
 
 use evdev::{AbsoluteAxisCode, Device};
 use eyre::eyre;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     constants::*,
     state::{TouchState, TouchStateTracker},
 };
 
-pub(crate) trait TouchGestureInhibitor {
+pub(crate) trait TouchGestureInhibitor: Send {
     fn should_inhibit(&self, now: SystemTime) -> bool;
 }
 
@@ -43,7 +43,8 @@ pub(crate) enum SwipeGesture {
     Down,
 }
 
-pub(crate) struct GestureDetector {
+pub(crate) struct GestureDetector<I: 'static + TouchGestureInhibitor> {
+    inhibitor: I,
     event_rx: mpsc::Receiver<eyre::Result<TouchState>>,
     gesture_tx: mpsc::SyncSender<eyre::Result<Gesture>>,
     last_touch: Option<TouchState>,
@@ -66,9 +67,10 @@ pub(crate) struct GestureDetector {
     long_click_emitted: bool,
 }
 
-impl GestureDetector {
+impl<I: 'static + TouchGestureInhibitor> GestureDetector<I> {
     pub(crate) fn start(
         touchpad_dev: Device,
+        inhibitor: I,
     ) -> eyre::Result<impl Iterator<Item = eyre::Result<Gesture>>> {
         // First acquire some basic properties of the device
         let mut max_x = -1;
@@ -102,6 +104,7 @@ impl GestureDetector {
         let (gesture_tx, gesture_rx) = mpsc::sync_channel(16);
 
         let state = GestureDetector {
+            inhibitor,
             event_rx,
             gesture_tx,
             last_touch: None,
@@ -141,7 +144,21 @@ impl GestureDetector {
                 Duration::from_secs(86400)
             };
 
-            let touch = match self.event_rx.recv_timeout(timeout) {
+            let touch = self.event_rx.recv_timeout(timeout);
+
+            let now = if let Ok(Ok(ref t)) = touch {
+                t.timestamp
+            } else {
+                SystemTime::now()
+            };
+
+            if self.inhibitor.should_inhibit(now) {
+                debug!("Touch temporarily inhibited, resetting state and ignoring");
+                self.reset_state()?;
+                continue;
+            }
+
+            let touch = match touch {
                 Ok(Ok(touch)) => {
                     if SystemTime::now()
                         .duration_since(touch.timestamp)
@@ -270,13 +287,7 @@ impl GestureDetector {
                     self.emit(Ok(Gesture::Swipe(swipe)))?;
                 }
 
-                self.first_down = None;
-                // These states also need to be reset if the finger is lifted
-                self.delta_x_abs_acc = 0;
-                self.delta_y_abs_acc = 0;
-                self.delta_x_acc = 0;
-                self.delta_y_acc = 0;
-                self.long_click_emitted = false;
+                self.reset_state()?;
             }
         }
     }
@@ -291,6 +302,24 @@ impl GestureDetector {
         } else {
             self.gesture_tx.send(gesture_or_err)?;
         }
+
+        Ok(())
+    }
+
+    fn reset_state(&mut self) -> eyre::Result<()> {
+        if self.dragging {
+            // if we're resetting state, we also need to tell everyone that we have stopped dragging
+            // because dragging is a state that needs to be synchronized with consumers
+            self.dragging = false;
+            self.emit(Ok(Gesture::DragEnd))?;
+        }
+
+        self.first_down = None;
+        self.delta_x_abs_acc = 0;
+        self.delta_y_abs_acc = 0;
+        self.delta_x_acc = 0;
+        self.delta_y_acc = 0;
+        self.long_click_emitted = false;
 
         Ok(())
     }
