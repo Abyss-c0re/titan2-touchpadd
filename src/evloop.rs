@@ -1,4 +1,4 @@
-use std::sync::atomic::Ordering;
+use std::time::SystemTime;
 
 use evdev::{
     Device, EventType, InputEvent, KeyCode, RelativeAxisCode, SynchronizationCode,
@@ -7,7 +7,7 @@ use evdev::{
 use tracing::{debug, info, warn};
 
 use crate::{
-    gesture::{Gesture, GestureDetector, SwipeGesture},
+    gesture::{Gesture, GestureDetector, SwipeGesture, TouchGestureInhibitor},
     keyboard::KeyboardHandler,
 };
 
@@ -17,13 +17,14 @@ pub(crate) fn run_evloop(
     mut uinput_dev: VirtualDevice,
     keyboard_uinput_dev: Option<VirtualDevice>,
 ) -> eyre::Result<()> {
-    let reject_flag = KeyboardHandler::start(keyboard_dev, keyboard_uinput_dev);
+    let inhibitor = KeyboardHandler::start(keyboard_dev, keyboard_uinput_dev);
     let detector = GestureDetector::start(touchpad_dev)?;
 
     info!("Main event loop started");
 
     for gesture in detector {
-        if reject_flag.load(Ordering::Relaxed) {
+        if inhibitor.should_inhibit(SystemTime::now()) {
+            debug!("Touch temporarily inhibited");
             continue;
         }
 

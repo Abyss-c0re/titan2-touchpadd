@@ -13,6 +13,10 @@ use crate::{
     state::{TouchState, TouchStateTracker},
 };
 
+pub(crate) trait TouchGestureInhibitor {
+    fn should_inhibit(&self, now: SystemTime) -> bool;
+}
+
 #[derive(Debug)]
 pub(crate) enum Gesture {
     /// X, Y coords

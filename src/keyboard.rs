@@ -2,22 +2,25 @@ use std::{
     collections::{HashMap, HashSet, hash_map::Entry},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc::{self, RecvTimeoutError},
+        atomic::{AtomicU64, Ordering},
     },
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use evdev::{Device, EventSummary, EventType, InputEvent, uinput::VirtualDevice};
 use tracing::{debug, error};
 
-use crate::constants::*;
+use crate::{constants::*, gesture::TouchGestureInhibitor};
 
 pub(crate) struct KeyboardHandler {
     keyboard_dev: Device,
     keyboard_uinput_dev: Option<VirtualDevice>,
-    key_tx: mpsc::SyncSender<()>,
+
+    program_epoch: SystemTime,
+
+    /// Duration in millis since program_epoch
+    last_key_press: Arc<AtomicU64>,
 
     /// For "lockable" (or sticky) keys, stores when each of them was last pressed.
     last_lockable_key_presses: HashMap<u16, Instant>,
@@ -30,16 +33,12 @@ impl KeyboardHandler {
     pub fn start(
         keyboard_dev: Device,
         keyboard_uinput_dev: Option<VirtualDevice>,
-    ) -> Arc<AtomicBool> {
-        let flag = Arc::new(AtomicBool::new(false));
-        let _flag = flag.clone();
-
-        let (key_tx, key_rx) = mpsc::sync_channel(16);
-
+    ) -> impl TouchGestureInhibitor {
         let handler = KeyboardHandler {
             keyboard_dev,
             keyboard_uinput_dev,
-            key_tx,
+            program_epoch: SystemTime::now(),
+            last_key_press: Arc::new(AtomicU64::new(0)),
             last_lockable_key_presses: {
                 let mut h = HashMap::new();
                 for key in KEYBOARD_LOCKABLE_KEYS {
@@ -50,32 +49,18 @@ impl KeyboardHandler {
             locked_keys: HashSet::new(),
         };
 
+        let inhibitor = KeyboardTouchInhibitor {
+            last_key_press: handler.last_key_press.clone(),
+            program_epoch: handler.program_epoch,
+        };
+
         thread::spawn(move || {
             if let Err(e) = handler.run() {
                 error!("keyboard handler loop exitted abnormally: {e:?}");
             }
         });
 
-        thread::spawn(move || {
-            loop {
-                let timeout = if _flag.load(Ordering::Relaxed) {
-                    KEYBOARD_TOUCH_REJECTION_TIMEOUT
-                } else {
-                    Duration::from_secs(86400)
-                };
-
-                match key_rx.recv_timeout(timeout) {
-                    Ok(_) => {
-                        debug!("Keyboard event received, rejecting touch for a while");
-                        _flag.store(true, Ordering::Relaxed)
-                    }
-                    Err(RecvTimeoutError::Timeout) => _flag.store(false, Ordering::Relaxed),
-                    Err(_) => break,
-                }
-            }
-        });
-
-        return flag;
+        return inhibitor;
     }
 
     fn run(mut self) -> eyre::Result<()> {
@@ -83,7 +68,13 @@ impl KeyboardHandler {
             for ev in self.keyboard_dev.fetch_events()? {
                 if let EventSummary::Key(kev, code, value) = ev.destructure() {
                     // Tell the touch side to reject input events for a while
-                    self.key_tx.try_send(()).ok();
+                    self.last_key_press.store(
+                        ev.timestamp()
+                            .duration_since(self.program_epoch)
+                            .unwrap_or(INVALID_DURATION)
+                            .as_millis() as u64,
+                        Ordering::Relaxed,
+                    );
 
                     // If we have a keyboard uinput dev it means we have keyboard features enabled
                     // Currently it just means a couple keys can be double-clicked to get their states locked
@@ -130,5 +121,21 @@ impl KeyboardHandler {
                 }
             }
         }
+    }
+}
+
+pub(crate) struct KeyboardTouchInhibitor {
+    program_epoch: SystemTime,
+    last_key_press: Arc<AtomicU64>,
+}
+
+impl TouchGestureInhibitor for KeyboardTouchInhibitor {
+    fn should_inhibit(&self, now: SystemTime) -> bool {
+        let last_key_press =
+            self.program_epoch + Duration::from_millis(self.last_key_press.load(Ordering::Relaxed));
+
+        now.duration_since(last_key_press)
+            .unwrap_or(INVALID_DURATION)
+            <= KEYBOARD_TOUCH_REJECTION_TIMEOUT
     }
 }
