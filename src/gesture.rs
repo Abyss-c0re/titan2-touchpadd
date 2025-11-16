@@ -14,7 +14,7 @@ use crate::{
 };
 
 pub(crate) trait TouchGestureInhibitor: Send {
-    fn should_inhibit(&self, now: SystemTime) -> bool;
+    fn should_inhibit(&self) -> bool;
 }
 
 #[derive(Debug)]
@@ -157,13 +157,7 @@ impl<I: 'static + TouchGestureInhibitor> GestureDetector<I> {
 
             let touch = self.event_rx.recv_timeout(timeout);
 
-            let now = if let Ok(Ok(ref t)) = touch {
-                t.timestamp
-            } else {
-                SystemTime::now()
-            };
-
-            if self.inhibitor.should_inhibit(now) {
+            if self.inhibitor.should_inhibit() {
                 debug!("Touch temporarily inhibited, resetting state and ignoring");
                 self.reset_state()?;
                 self.inhibition_status = GestureInhibitionStatus::Inhibited;

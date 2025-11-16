@@ -27,9 +27,6 @@ pub const NO_MOVEMENT_THRESHOLD: f64 = 0.005;
 /// How much of each edge do we consider as the "scrolling" region
 pub const SCROLL_EDGE_VERTICAL_THRESHOLD: f64 = 0.005;
 
-/// Every key press rejects touch events for this long
-pub const KEYBOARD_TOUCH_REJECTION_TIMEOUT: Duration = Duration::from_millis(500);
-
 /// How quickly does a key have to be pressed to be considered "double pressed"
 pub const KEYBOARD_DOUBLE_PRESS_TIMEOUT: Duration = Duration::from_millis(200);
 

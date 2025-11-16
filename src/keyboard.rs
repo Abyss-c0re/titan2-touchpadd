@@ -2,10 +2,10 @@ use std::{
     collections::{HashMap, HashSet, hash_map::Entry},
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     thread,
-    time::{Duration, Instant, SystemTime},
+    time::Instant,
 };
 
 use evdev::{Device, EventSummary, EventType, InputEvent, uinput::VirtualDevice};
@@ -17,10 +17,11 @@ pub(crate) struct KeyboardHandler {
     keyboard_dev: Device,
     keyboard_uinput_dev: Option<VirtualDevice>,
 
-    program_epoch: SystemTime,
+    /// State tracker of all keys on the keyboard, true = down
+    keyboard_state: HashMap<u16, bool>,
 
-    /// Duration in millis since program_epoch
-    last_key_press: Arc<AtomicU64>,
+    // Is any key currently physically down? This does not account for "sticky" or lockable keys below
+    any_key_down: Arc<AtomicBool>,
 
     /// For "lockable" (or sticky) keys, stores when each of them was last pressed.
     last_lockable_key_presses: HashMap<u16, Instant>,
@@ -37,8 +38,8 @@ impl KeyboardHandler {
         let handler = KeyboardHandler {
             keyboard_dev,
             keyboard_uinput_dev,
-            program_epoch: SystemTime::now(),
-            last_key_press: Arc::new(AtomicU64::new(0)),
+            keyboard_state: HashMap::new(),
+            any_key_down: Arc::new(AtomicBool::new(false)),
             last_lockable_key_presses: {
                 let mut h = HashMap::new();
                 for key in KEYBOARD_LOCKABLE_KEYS {
@@ -50,8 +51,7 @@ impl KeyboardHandler {
         };
 
         let inhibitor = KeyboardTouchInhibitor {
-            last_key_press: handler.last_key_press.clone(),
-            program_epoch: handler.program_epoch,
+            any_key_down: handler.any_key_down.clone(),
         };
 
         thread::spawn(move || {
@@ -68,13 +68,9 @@ impl KeyboardHandler {
             for ev in self.keyboard_dev.fetch_events()? {
                 if let EventSummary::Key(kev, code, value) = ev.destructure() {
                     // Tell the touch side to reject input events for a while
-                    self.last_key_press.store(
-                        ev.timestamp()
-                            .duration_since(self.program_epoch)
-                            .unwrap_or(INVALID_DURATION)
-                            .as_millis() as u64,
-                        Ordering::Relaxed,
-                    );
+                    self.keyboard_state.insert(code.code(), value == 1);
+                    self.any_key_down
+                        .store(self.keyboard_state.values().any(|v| *v), Ordering::SeqCst);
 
                     // If we have a keyboard uinput dev it means we have keyboard features enabled
                     // Currently it just means a couple keys can be double-clicked to get their states locked
@@ -125,17 +121,11 @@ impl KeyboardHandler {
 }
 
 pub(crate) struct KeyboardTouchInhibitor {
-    program_epoch: SystemTime,
-    last_key_press: Arc<AtomicU64>,
+    any_key_down: Arc<AtomicBool>,
 }
 
 impl TouchGestureInhibitor for KeyboardTouchInhibitor {
-    fn should_inhibit(&self, now: SystemTime) -> bool {
-        let last_key_press =
-            self.program_epoch + Duration::from_millis(self.last_key_press.load(Ordering::Relaxed));
-
-        now.duration_since(last_key_press)
-            .unwrap_or(INVALID_DURATION)
-            <= KEYBOARD_TOUCH_REJECTION_TIMEOUT
+    fn should_inhibit(&self) -> bool {
+        self.any_key_down.load(Ordering::SeqCst)
     }
 }
