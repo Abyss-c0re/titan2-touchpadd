@@ -11,12 +11,13 @@ Currently, the following gestures are implemented:
 - Right-click: a long single tap
 - Drag: double tap, then drag the finger (without releasing the second tap) along the keyboard
 - Vertical scrolling: tapping and moving a finger along the left or right edges
-- Simulated Left/Up/Right/Down key presses: swiping the finger quickly in the corresponding direction. This also scrolls the content in some apps, but is mainly useful for selecting candidates in some input methods like [fcitx5-android](https://fcitx5-android.github.io/).
 
 In addition, this daemon also implements touch rejection when a keyboard key press is detected. When the env variable
 `KEYBOARD_FEATURES` is set to `true`, the following keyboard quality-of-life improvement is also activated:
 
 - Shift (caps), Sym, and Fn keys become "sticky": double-clicking them "locks" them into the pressed state until they are cancelled by another click of the same key or a conflicting key (such as backspace).
+- Simulated Left/Up/Right/Down key presses: swiping the finger quickly in the corresponding direction. This also scrolls the content in some apps, but is mainly useful for selecting candidates in some input methods like [fcitx5-android](https://fcitx5-android.github.io/).
+- Numeric keys simulation: double-tapping on the top row of keys (but without pressing them!) simulates numeric keys 0-6. Like above, this is mainly useful for input methods.
 
 Building
 ---
