@@ -12,7 +12,10 @@ pub const DOUBLE_CLICK_DRAG_TIMEOUT: Duration = Duration::from_millis(200);
 /// which we would consider a long click.
 pub const LONG_CLICK_DURATION: Duration = Duration::from_secs(1);
 
+/// Maximum duration for a gesture to be recognized as a swipe.
 pub const SWIPE_DURATION: Duration = Duration::from_millis(200);
+/// How fast must the finger move to be recognized as a swipe.
+/// The unit here is (percent. of longer edge) / sec.
 pub const SWIPE_SPEED_THRESHOLD: f64 = 1.0;
 
 pub const INVALID_DURATION: Duration = Duration::from_secs(u64::MAX);
