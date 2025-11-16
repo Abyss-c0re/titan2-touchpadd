@@ -120,11 +120,11 @@ pub(crate) fn run_evloop(
     keyboard_uinput_dev: Option<VirtualDevice>,
 ) -> eyre::Result<()> {
     let reject_flag = run_keyboard_loop(keyboard_dev, keyboard_uinput_dev);
-    let detector = GestureDetector::new(touchpad_dev)?;
+    let detector = GestureDetector::start(touchpad_dev)?;
 
     info!("Main event loop started");
 
-    for gesture in detector.flatten() {
+    for gesture in detector {
         if reject_flag.load(Ordering::Relaxed) {
             continue;
         }

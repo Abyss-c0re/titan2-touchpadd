@@ -258,7 +258,6 @@ version = "0.1.0"
 dependencies = [
  "evdev",
  "eyre",
- "smallvec",
  "tracing",
  "tracing-logcat",
  "tracing-subscriber",

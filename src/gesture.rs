@@ -6,8 +6,7 @@ use std::{
 
 use evdev::{AbsoluteAxisCode, Device};
 use eyre::eyre;
-use smallvec::{SmallVec, smallvec};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::{
     constants::*,
@@ -32,6 +31,7 @@ pub(crate) enum Gesture {
 
 pub(crate) struct GestureDetector {
     event_rx: mpsc::Receiver<eyre::Result<TouchState>>,
+    gesture_tx: mpsc::SyncSender<eyre::Result<Gesture>>,
     last_touch: Option<TouchState>,
     first_down: Option<TouchState>,
     max_x: i32,
@@ -50,7 +50,9 @@ pub(crate) struct GestureDetector {
 }
 
 impl GestureDetector {
-    pub(crate) fn new(touchpad_dev: Device) -> eyre::Result<GestureDetector> {
+    pub(crate) fn start(
+        touchpad_dev: Device,
+    ) -> eyre::Result<impl Iterator<Item = eyre::Result<Gesture>>> {
         // First acquire some basic properties of the device
         let mut max_x = -1;
         let mut max_y = -1;
@@ -80,8 +82,11 @@ impl GestureDetector {
             }
         });
 
-        Ok(GestureDetector {
+        let (gesture_tx, gesture_rx) = mpsc::sync_channel(16);
+
+        let state = GestureDetector {
             event_rx,
+            gesture_tx,
             last_touch: None,
             first_down: None,
             delta_x_abs_acc: 0,
@@ -91,19 +96,18 @@ impl GestureDetector {
             long_click_emitted: false,
             max_x,
             max_y,
-        })
+        };
+
+        thread::spawn(|| {
+            if let Err(e) = state.run() {
+                error!("Gesture detection loop exitted abnormally: {e:?}");
+            }
+        });
+
+        Ok(gesture_rx.into_iter())
     }
 
-    fn no_significant_movement_since_down(&self) -> bool {
-        (self.delta_x_abs_acc as f64) < self.max_x as f64 * NO_MOVEMENT_THRESHOLD
-            && (self.delta_y_abs_acc as f64) < self.max_y as f64 * NO_MOVEMENT_THRESHOLD
-    }
-}
-
-impl Iterator for GestureDetector {
-    type Item = SmallVec<[eyre::Result<Gesture>; 4]>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    fn run(mut self) -> eyre::Result<()> {
         loop {
             // If we just had a single click, then either it's the start of
             // a double-click-to-drag gesture, or it's "just" a single click
@@ -131,27 +135,30 @@ impl Iterator for GestureDetector {
                         touch
                     }
                 }
-                Ok(Err(e)) => return Some(smallvec![Err(e)]),
+                Ok(Err(e)) => {
+                    self.emit(Err(e))?;
+                    continue;
+                }
                 // Timed out after a single click, meaning that it truly was just a single click (not a double-click-to-drag)
                 Err(RecvTimeoutError::Timeout) if self.single_click_pending => {
                     self.single_click_pending = false;
                     // Now emit a single click
-                    return Some(smallvec![Ok(Gesture::Click)]);
+                    self.emit(Ok(Gesture::Click))?;
+                    continue;
                 }
                 // Timed out after the first down event, we may have a long click
                 Err(RecvTimeoutError::Timeout) if self.first_down.is_some() => {
                     // We do still need to verify the delta x and y accumulators to ensure we haven't moved much
                     if self.no_significant_movement_since_down() && !self.long_click_emitted {
                         self.long_click_emitted = true;
-                        return Some(smallvec![Ok(Gesture::LongClick)]);
-                    } else {
-                        continue;
+                        self.emit(Ok(Gesture::LongClick))?;
                     }
-                }
-                Err(_) => return None,
-            };
 
-            let mut yield_values: Self::Item = smallvec![];
+                    continue;
+                }
+                // Unknown error, break the loop
+                Err(e) => return Err(e.into()),
+            };
 
             if self.single_click_pending {
                 if touch
@@ -162,11 +169,11 @@ impl Iterator for GestureDetector {
                 {
                     // Just a single click
                     self.single_click_pending = false;
-                    yield_values.push(Ok(Gesture::Click));
+                    self.emit(Ok(Gesture::Click))?;
                 } else if touch.down {
                     // Drag started
                     self.dragging = true;
-                    yield_values.push(Ok(Gesture::DragStart));
+                    self.emit(Ok(Gesture::DragStart))?;
                 }
             }
 
@@ -189,7 +196,7 @@ impl Iterator for GestureDetector {
                 {
                     // This is a long click
                     self.long_click_emitted = true;
-                    yield_values.push(Ok(Gesture::LongClick));
+                    self.emit(Ok(Gesture::LongClick))?;
                 } else {
                     let delta_x = touch.x - last_touch.x;
                     let delta_y = touch.y - last_touch.y;
@@ -199,9 +206,9 @@ impl Iterator for GestureDetector {
                             < self.max_x as f64 * SCROLL_EDGE_VERTICAL_THRESHOLD
                     {
                         // This is vertical scroll (left or right edge)
-                        yield_values.push(Ok(Gesture::VerticalScroll(delta_y)));
+                        self.emit(Ok(Gesture::VerticalScroll(delta_y)))?;
                     } else {
-                        yield_values.push(Ok(Gesture::PointerMove(delta_x, delta_y)));
+                        self.emit(Ok(Gesture::PointerMove(delta_x, delta_y)))?;
                     }
                     self.delta_x_abs_acc += delta_x.abs() as u32;
                     self.delta_y_abs_acc += delta_y.abs() as u32;
@@ -226,7 +233,7 @@ impl Iterator for GestureDetector {
 
             if self.dragging && !touch.down {
                 self.dragging = false;
-                yield_values.push(Ok(Gesture::DragEnd));
+                self.emit(Ok(Gesture::DragEnd))?;
             }
 
             self.last_touch = Some(touch.clone());
@@ -242,10 +249,25 @@ impl Iterator for GestureDetector {
                 self.delta_y_abs_acc = 0;
                 self.long_click_emitted = false;
             }
-
-            if !yield_values.is_empty() {
-                return Some(yield_values);
-            }
         }
+    }
+
+    /// Emits a gesture event or error, but skips if the gesture event channel is already full.
+    /// Returns an error if trhe gesture event channel is closed
+    fn emit(&self, gesture_or_err: eyre::Result<Gesture>) -> eyre::Result<()> {
+        if gesture_or_err.is_ok() {
+            if let Err(TrySendError::Disconnected(_)) = self.gesture_tx.try_send(gesture_or_err) {
+                return Err(eyre!("channel closed, shutting down"));
+            }
+        } else {
+            self.gesture_tx.send(gesture_or_err)?;
+        }
+
+        Ok(())
+    }
+
+    fn no_significant_movement_since_down(&self) -> bool {
+        (self.delta_x_abs_acc as f64) < self.max_x as f64 * NO_MOVEMENT_THRESHOLD
+            && (self.delta_y_abs_acc as f64) < self.max_y as f64 * NO_MOVEMENT_THRESHOLD
     }
 }

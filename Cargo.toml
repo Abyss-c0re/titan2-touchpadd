@@ -6,7 +6,6 @@ edition = "2024"
 [dependencies]
 evdev = "0.13.2"
 eyre = "0.6.12"
-smallvec = "1.15.1"
 tracing = "0.1.41"
 tracing-logcat = "0.1.0"
 tracing-subscriber = { version = "0.3.20", features = [ "env-filter" ] }
