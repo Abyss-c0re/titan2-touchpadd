@@ -71,17 +71,17 @@ impl GestureInhibition {
             // This is because sometimes the finger up event can happen before the corresponding keyboard
             // key up event.
             GestureInhibitionStatus::WaitingForUp | GestureInhibitionStatus::Inhibited => {
-                match ev {
-                    Some(ev) => {
-                        if ev.down {
-                            true
-                        } else {
-                            *lock = GestureInhibitionStatus::Normal;
-                            false
-                        }
-                    }
-                    None => true,
+                if let Some(ev) = ev
+                    && !ev.down
+                {
+                    *lock = GestureInhibitionStatus::Normal;
                 }
+
+                // Always block the last up event even if we ended up transitioning back to normal
+                // This helps prevent spurious single-clicks in case keyboard / touch is somewhat de-synced
+                // (e.g. we see the full key down -> up event sequence before we see any touch event)
+                // since returning true here also causes GestureDetector to reset the state
+                true
             }
         }
     }
