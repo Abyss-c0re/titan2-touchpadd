@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use evdev::{
     Device, EventType, InputEvent, KeyCode, RelativeAxisCode, SynchronizationCode,
     uinput::VirtualDevice,
@@ -15,9 +17,9 @@ pub(crate) fn run_evloop(
     touchpad_dev: Device,
     keyboard_dev: Device,
     mut uinput_dev: VirtualDevice,
-    keyboard_uinput_dev: Option<VirtualDevice>,
+    keyboard_uinput_dev: Option<Arc<Mutex<VirtualDevice>>>,
 ) -> eyre::Result<()> {
-    let inhibitor = KeyboardHandler::start(keyboard_dev, keyboard_uinput_dev);
+    let inhibitor = KeyboardHandler::start(keyboard_dev, keyboard_uinput_dev.clone());
     let detector = GestureDetector::start(keyboard_features_enabled, touchpad_dev, inhibitor)?;
 
     info!("Main event loop started");
@@ -89,28 +91,32 @@ pub(crate) fn run_evloop(
                     SwipeGesture::Down => KeyCode::KEY_DOWN,
                 };
 
-                uinput_dev.emit(&[
-                    InputEvent::new(EventType::KEY.0, key.code(), 1),
-                    InputEvent::new(
-                        EventType::SYNCHRONIZATION.0,
-                        SynchronizationCode::SYN_REPORT.0,
-                        0,
-                    ),
-                    InputEvent::new(EventType::KEY.0, key.code(), 0),
-                ])?;
+                if let Some(keyboard_uinput_dev) = keyboard_uinput_dev.as_ref() {
+                    keyboard_uinput_dev.lock().unwrap().emit(&[
+                        InputEvent::new(EventType::KEY.0, key.code(), 1),
+                        InputEvent::new(
+                            EventType::SYNCHRONIZATION.0,
+                            SynchronizationCode::SYN_REPORT.0,
+                            0,
+                        ),
+                        InputEvent::new(EventType::KEY.0, key.code(), 0),
+                    ])?;
+                }
             }
             Gesture::TopRowDoubleTap(i) => {
                 debug!("Double-tapping top row!");
                 let key = NUMERIC_KEYCODES[i as usize];
-                uinput_dev.emit(&[
-                    InputEvent::new(EventType::KEY.0, key.code(), 1),
-                    InputEvent::new(
-                        EventType::SYNCHRONIZATION.0,
-                        SynchronizationCode::SYN_REPORT.0,
-                        0,
-                    ),
-                    InputEvent::new(EventType::KEY.0, key.code(), 0),
-                ])?;
+                if let Some(keyboard_uinput_dev) = keyboard_uinput_dev.as_ref() {
+                    keyboard_uinput_dev.lock().unwrap().emit(&[
+                        InputEvent::new(EventType::KEY.0, key.code(), 1),
+                        InputEvent::new(
+                            EventType::SYNCHRONIZATION.0,
+                            SynchronizationCode::SYN_REPORT.0,
+                            0,
+                        ),
+                        InputEvent::new(EventType::KEY.0, key.code(), 0),
+                    ])?;
+                }
             }
         }
     }

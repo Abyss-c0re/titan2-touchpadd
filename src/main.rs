@@ -1,4 +1,7 @@
-use std::os::unix::fs::FileTypeExt;
+use std::{
+    os::unix::fs::FileTypeExt,
+    sync::{Arc, Mutex},
+};
 
 use evdev::{AttributeSet, Device, KeyCode, RelativeAxisCode, uinput};
 use eyre::{OptionExt, eyre};
@@ -56,15 +59,6 @@ fn main() -> eyre::Result<()> {
         let mut keys = AttributeSet::new();
         keys.insert(KeyCode::BTN_LEFT);
         keys.insert(KeyCode::BTN_RIGHT);
-        keys.insert(KeyCode::KEY_LEFT);
-        keys.insert(KeyCode::KEY_RIGHT);
-        keys.insert(KeyCode::KEY_UP);
-        keys.insert(KeyCode::KEY_DOWN);
-
-        // Top-row virtual numeric keys
-        for i in NUMERIC_KEYCODES {
-            keys.insert(i);
-        }
 
         keys
     };
@@ -91,7 +85,25 @@ fn main() -> eyre::Result<()> {
         let mut dev = uinput::VirtualDevice::builder()?
             .name("TitanKey") // For the keyboard we're really just adding minor features, so we reuse the official device name
             .with_relative_axes(&uinput_axes)?
-            .with_keys(keyboard_dev.supported_keys().unwrap())?
+            .with_keys(&{
+                let mut keys = AttributeSet::new();
+                for key in keyboard_dev.supported_keys().unwrap() {
+                    keys.insert(key);
+                }
+
+                // These additional keys respond to touchpad gestures, but have to live on the keyboard
+                // in order not to mess up Android's key charracter maps.
+                keys.insert(KeyCode::KEY_LEFT);
+                keys.insert(KeyCode::KEY_RIGHT);
+                keys.insert(KeyCode::KEY_UP);
+                keys.insert(KeyCode::KEY_DOWN);
+
+                // Top-row virtual numeric keys
+                for i in NUMERIC_KEYCODES {
+                    keys.insert(i);
+                }
+                keys
+            })?
             .build()?;
 
         info!(
@@ -101,7 +113,7 @@ fn main() -> eyre::Result<()> {
                 .ok_or_eyre("can't decode pathbuf")?
         );
 
-        Some(dev)
+        Some(Arc::new(Mutex::new(dev)))
     } else {
         None
     };

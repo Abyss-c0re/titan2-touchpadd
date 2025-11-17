@@ -1,6 +1,9 @@
 use std::{
     collections::{HashMap, HashSet, hash_map::Entry},
-    sync::mpsc::{self, TryRecvError},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, TryRecvError},
+    },
     thread,
     time::Instant,
 };
@@ -13,7 +16,7 @@ use crate::{constants::*, gesture::TouchGestureInhibitor};
 
 pub(crate) struct KeyboardHandler {
     keyboard_dev: Device,
-    keyboard_uinput_dev: Option<VirtualDevice>,
+    keyboard_uinput_dev: Option<Arc<Mutex<VirtualDevice>>>,
 
     key_tx: mpsc::Sender<(u16, bool)>,
 
@@ -27,7 +30,7 @@ pub(crate) struct KeyboardHandler {
 impl KeyboardHandler {
     pub fn start(
         keyboard_dev: Device,
-        keyboard_uinput_dev: Option<VirtualDevice>,
+        keyboard_uinput_dev: Option<Arc<Mutex<VirtualDevice>>>,
     ) -> impl TouchGestureInhibitor {
         let (key_tx, key_rx) = mpsc::channel();
 
@@ -75,13 +78,15 @@ impl KeyboardHandler {
                         {
                             for locked_key in self.locked_keys.drain() {
                                 keyboard_uinput_dev
+                                    .lock()
+                                    .unwrap()
                                     .emit(&[InputEvent::new(EventType::KEY.0, locked_key, 0)])
                                     .ok();
                             }
                         }
 
                         // Now emit the event as-is
-                        keyboard_uinput_dev.emit(&[kev.into()]).ok();
+                        keyboard_uinput_dev.lock().unwrap().emit(&[kev.into()]).ok();
 
                         // If this key is part of the "lockable" set, check whether it has been pressed in quick succession
                         // If so, temporarily "lock" its state to pressed until the next press (that happens naturally)
@@ -97,6 +102,8 @@ impl KeyboardHandler {
                                 debug!("Key {} locked!", code.code());
                                 self.locked_keys.insert(code.code());
                                 keyboard_uinput_dev
+                                    .lock()
+                                    .unwrap()
                                     .emit(&[InputEvent::new(EventType::KEY.0, code.code(), 1)])
                                     .ok();
                             } else {
