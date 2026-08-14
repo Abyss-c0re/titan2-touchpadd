@@ -70,3 +70,16 @@ Why not a kernel driver?
 
 1. Because Unihertz doesn't open-source their official kernel drivers
 2. Implementing this in the kernel would be a huge pain; it might be trivial to fix the exported events so that Android's touchpad stack works, but gesture detection will still not work properly without true multitouch. Touch rejection on keyboard events will also require a lot of custom plumbing. At that point, simply re-exposing a `uinput` device is just easier.
+
+Product notes (this fork)
+---
+
+This fork is used by AtlasOS / Titan 2 hybrid:
+
+- Default: `KEYBOARD_FEATURES` **not** `true` — never open TitanKey.
+- `TEXT_CARET_NAV` / `TOP_ROW_CURSOR` (default on): top-row strip → caret keys; pad surface is the lower area.
+- `INPROC_PARK`: in-process pause for typing (no process kill). Status: `/data/local/tmp/titan2_touchpadd_status`.
+- Pad gestures: `titan2_pad_tap_click`, `titan2_pad_long_click`, `titan2_pad_scroll`, `titan2_pad_dbltap` (`classic` | `latch` | `off`).
+
+Upstream: [PeterGSI/titan2-touchpadd](https://gitea.angry.im/PeterGSI/titan2-touchpadd).
+
