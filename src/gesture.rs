@@ -36,6 +36,8 @@ pub(crate) enum Gesture {
     VerticalScroll(i32),
     /// Swiping
     Swipe(SwipeGesture),
+    /// One step of Android text caret (KEY_LEFT=-1 / KEY_RIGHT=+1), not mouse pointer.
+    CaretStep(i32),
     /// Double-tap on the top row of keys
     TopRowDoubleTap(u32),
 }
@@ -97,6 +99,11 @@ impl GestureInhibition {
 
 pub(crate) struct GestureDetector {
     keyboard_features_enabled: bool,
+    /// Independent of KEYBOARD_FEATURES / TitanKey: top-row strip drives cursor.
+    /// When on, main pad surface is the lower region only (OEM top-row split).
+    top_row_cursor: bool,
+    /// Only top-row cursor path (no lower pad pointer/click) — standalone module.
+    top_row_only: bool,
     inhibition: GestureInhibition,
     event_rx: mpsc::Receiver<eyre::Result<TouchState>>,
     gesture_tx: mpsc::SyncSender<eyre::Result<Gesture>>,
@@ -121,6 +128,8 @@ pub(crate) struct GestureDetector {
     dragging: bool,
     /// Has a long-click been emitted for the current streak of touch down events?
     long_click_emitted: bool,
+    /// Accumulated horizontal motion on top-row for text-caret steps.
+    caret_accum_x: i32,
 }
 
 impl GestureDetector {
@@ -144,7 +153,17 @@ impl GestureDetector {
             return Err(eyre!("No max X / Y coordinates available"));
         }
 
-        info!("Touch device has max_x = {max_x}, max_y = {max_y}, assuming minimums are 0");
+        // TOP_ROW_CURSOR: independent of KEYBOARD_FEATURES / TitanKey grab.
+        // Default on so product mouse + HID paths get OEM top-row cursor without dual TitanKey.
+        let top_row_cursor = env_flag_default_on("TOP_ROW_CURSOR");
+        // TOP_ROW_ONLY: standalone module — only top-row cursor strip (no lower pad).
+        let top_row_only = env_flag_default_off("TOP_ROW_ONLY");
+        let top_row_cursor = top_row_cursor || top_row_only;
+
+        info!(
+            "Touch device max_x={max_x} max_y={max_y}; TOP_ROW_CURSOR={top_row_cursor} TOP_ROW_ONLY={top_row_only} PAD_SURFACE={}",
+            if top_row_cursor { "lower" } else { "full" }
+        );
 
         let (event_tx, event_rx) = mpsc::sync_channel(16);
         thread::spawn(move || {
@@ -177,6 +196,8 @@ impl GestureDetector {
 
         let state = GestureDetector {
             keyboard_features_enabled,
+            top_row_cursor,
+            top_row_only,
             inhibition,
             event_rx,
             gesture_tx,
@@ -190,6 +211,7 @@ impl GestureDetector {
             top_row_double_tap_pending: false,
             dragging: false,
             long_click_emitted: false,
+            caret_accum_x: 0,
             max_x,
             max_y,
         };
@@ -201,6 +223,24 @@ impl GestureDetector {
         });
 
         Ok(gesture_rx.into_iter())
+    }
+
+    #[inline]
+    fn top_row_y_max(&self) -> i32 {
+        ((self.max_y as f64) * KEYBOARD_TOP_ROW_HEIGHT) as i32
+    }
+
+    #[inline]
+    fn is_top_row_y(&self, y: i32) -> bool {
+        y < self.top_row_y_max()
+    }
+
+    /// Contact started in the reserved top-row strip (shift/sym/back/recents/fn/alt).
+    fn first_down_in_top_row(&self) -> bool {
+        self.first_down
+            .as_ref()
+            .map(|t| self.is_top_row_y(t.y))
+            .unwrap_or(false)
     }
 
     fn run(mut self) -> eyre::Result<()> {
@@ -277,14 +317,17 @@ impl GestureDetector {
                 {
                     // Just a single click
                     self.single_click_pending = false;
-                    self.emit(Ok(Gesture::Click))?;
+                    // No click on top-row strip when reserved for cursor / keys
+                    if !(self.top_row_cursor && self.is_top_row_y(touch.y)) && !self.top_row_only {
+                        self.emit(Ok(Gesture::Click))?;
+                    }
                 } else if touch.down {
-                    if self.keyboard_features_enabled
-                        && touch.y < ((self.max_y as f64) * KEYBOARD_TOP_ROW_HEIGHT) as i32
+                    if (self.keyboard_features_enabled || self.top_row_cursor)
+                        && self.is_top_row_y(touch.y)
                     {
                         // Double-tap on the top row of keys
                         self.top_row_double_tap_pending = true;
-                    } else {
+                    } else if !self.top_row_only {
                         // Drag started
                         self.dragging = true;
                         self.emit(Ok(Gesture::DragStart))?;
@@ -301,15 +344,19 @@ impl GestureDetector {
                 && last_touch.down
                 && let Some(ref first_down) = self.first_down
             {
-                if touch
-                    .timestamp
-                    .duration_since(first_down.timestamp)
-                    .unwrap_or(INVALID_DURATION)
-                    >= LONG_CLICK_DURATION
+                let top_row_stroke = self.top_row_cursor && self.is_top_row_y(first_down.y);
+
+                if !top_row_stroke
+                    && !self.top_row_only
+                    && touch
+                        .timestamp
+                        .duration_since(first_down.timestamp)
+                        .unwrap_or(INVALID_DURATION)
+                        >= LONG_CLICK_DURATION
                     && self.no_significant_movement_since_down()
                     && !self.long_click_emitted
                 {
-                    // This is a long click
+                    // This is a long click (never on reserved top-row strip)
                     self.long_click_emitted = true;
                     self.emit(Ok(Gesture::LongClick))?;
                 } else {
@@ -321,13 +368,32 @@ impl GestureDetector {
                     self.delta_x_acc += delta_x;
                     self.delta_y_acc += delta_y;
 
-                    if (first_down.x as f64) < self.max_x as f64 * SCROLL_EDGE_VERTICAL_THRESHOLD
+                    if top_row_stroke {
+                        // Text caret (blinking insert point), not mouse pointer:
+                        // accumulate horizontal travel → KEY_LEFT/RIGHT steps.
+                        // Discrete fast swipe still emits Swipe on lift.
+                        if self.try_detect_swipe(touch.timestamp).is_none() {
+                            self.caret_accum_x += delta_x;
+                            while self.caret_accum_x >= CARET_STEP_PX {
+                                self.caret_accum_x -= CARET_STEP_PX;
+                                self.emit(Ok(Gesture::CaretStep(1)))?;
+                            }
+                            while self.caret_accum_x <= -CARET_STEP_PX {
+                                self.caret_accum_x += CARET_STEP_PX;
+                                self.emit(Ok(Gesture::CaretStep(-1)))?;
+                            }
+                        }
+                    } else if self.top_row_only {
+                        // Standalone top-row only: ignore lower-surface strokes
+                    } else if (first_down.x as f64) < self.max_x as f64 * SCROLL_EDGE_VERTICAL_THRESHOLD
                         || ((self.max_x - first_down.x) as f64)
                             < self.max_x as f64 * SCROLL_EDGE_VERTICAL_THRESHOLD
                     {
                         // This is vertical scroll (left or right edge)
                         self.emit(Ok(Gesture::VerticalScroll(delta_y)))?;
                     } else if self.try_detect_swipe(touch.timestamp).is_none() {
+                        // Main pad surface: when top-row cursor is on, only lower area
+                        // (first_down already below top row here).
                         self.emit(Ok(Gesture::PointerMove(delta_x, delta_y)))?;
                     }
                 }
@@ -340,6 +406,8 @@ impl GestureDetector {
                 && !touch.down
                 && !self.dragging
                 && !self.top_row_double_tap_pending
+                && !self.top_row_only
+                && !(self.top_row_cursor && self.is_top_row_y(first_down.y))
                 && self.no_significant_movement_since_down()
                 && self.try_detect_swipe(touch.timestamp).is_none()
                 && touch
@@ -366,10 +434,10 @@ impl GestureDetector {
                 if let Some(swipe) = self.try_detect_swipe(touch.timestamp) {
                     self.emit(Ok(Gesture::Swipe(swipe)))?;
                 } else if self.top_row_double_tap_pending
-                    && touch.y < ((self.max_y as f64) * KEYBOARD_TOP_ROW_HEIGHT) as i32
+                    && self.keyboard_features_enabled
+                    && self.is_top_row_y(touch.y)
                 {
-                    // Now that we see an up, this is when we need to emit the top-row double tap event
-                    // (NOT when the down was seen)
+                    // Numeric double-tap still requires KEYBOARD_FEATURES (virtual key inject).
                     let mut key_idx = None;
                     for i in 0..KEYBOARD_TOP_ROW_KEY_BOUNDS.len() {
                         let lower_bound = if i == 0 {
@@ -383,7 +451,9 @@ impl GestureDetector {
                             key_idx = Some(i as u32);
                         }
                     }
-                    self.emit(Ok(Gesture::TopRowDoubleTap(key_idx.unwrap())))?
+                    if let Some(idx) = key_idx {
+                        self.emit(Ok(Gesture::TopRowDoubleTap(idx)))?
+                    }
                 }
 
                 self.reset_state(false)?;
@@ -420,6 +490,7 @@ impl GestureDetector {
         self.delta_y_acc = 0;
         self.long_click_emitted = false;
         self.top_row_double_tap_pending = false;
+        self.caret_accum_x = 0;
 
         // This flag is set if we truly want to clear _all_ state, for example, when input inhibition
         // is triggered. It is _not_ set when we just want to reset most of the state when the finger lifts.
@@ -436,13 +507,23 @@ impl GestureDetector {
     }
 
     fn try_detect_swipe(&self, now: SystemTime) -> Option<SwipeGesture> {
-        if self.dragging || !self.keyboard_features_enabled {
+        if self.dragging {
             return None;
         }
 
         let Some(ref first_down) = self.first_down else {
             return None;
         };
+
+        // Top-row cursor: L/R swipe only when contact starts on top-row keys.
+        // KEYBOARD_FEATURES: OEM full-surface swipe → arrow keys (legacy).
+        let top_row_stroke = self.top_row_cursor && self.is_top_row_y(first_down.y);
+        if !top_row_stroke && !self.keyboard_features_enabled {
+            return None;
+        }
+        if top_row_stroke && !self.top_row_cursor {
+            return None;
+        }
 
         let Ok(dur) = now.duration_since(first_down.timestamp) else {
             return None;
@@ -455,6 +536,9 @@ impl GestureDetector {
         // We really want the same speed to apply to both X and Y directions,
         // so choose the wider direction as baseline
         let speed_ref = std::cmp::max(self.max_x, self.max_y) as f64;
+        if dur.as_secs_f64() <= 0.0 {
+            return None;
+        }
 
         let speed_x = (self.delta_x_acc as f64 / dur.as_secs_f64()) / speed_ref;
 
@@ -465,6 +549,11 @@ impl GestureDetector {
         } else {
             None
         };
+
+        // Top-row cursor only cares about horizontal (cursor left/right).
+        if top_row_stroke {
+            return res_x;
+        }
 
         let speed_y = (self.delta_y_acc as f64 / dur.as_secs_f64()) / speed_ref;
 
@@ -489,5 +578,25 @@ impl GestureDetector {
                 }
             }
         }
+    }
+}
+
+fn env_flag_default_on(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(v) => {
+            let v = v.to_ascii_lowercase();
+            !(v == "0" || v == "false" || v == "off" || v == "no")
+        }
+        Err(_) => true,
+    }
+}
+
+fn env_flag_default_off(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(v) => {
+            let v = v.to_ascii_lowercase();
+            v == "1" || v == "true" || v == "on" || v == "yes"
+        }
+        Err(_) => false,
     }
 }

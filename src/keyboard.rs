@@ -154,3 +154,15 @@ impl TouchGestureInhibitor for KeyboardTouchInhibitor {
         Ok(self.should_inhibit())
     }
 }
+
+/// When KEYBOARD_FEATURES is off we never open TitanKey. Park forever so the
+/// gesture detector's inhibit thread stays idle (no pad-vs-type inhibit).
+pub(crate) struct NoKeyboardInhibitor;
+
+impl TouchGestureInhibitor for NoKeyboardInhibitor {
+    fn next_should_inhibit(&mut self) -> eyre::Result<bool> {
+        loop {
+            thread::park();
+        }
+    }
+}

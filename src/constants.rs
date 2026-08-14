@@ -47,10 +47,14 @@ pub const KEYBOARD_LOCKED_KEYS_CONFLICTS: [u16; 3] = [
     KeyCode::KEY_ENTER.0,
 ];
 
-/// The height of the keyboard's top row, as a percentage of total height
+/// The height of the keyboard's top row, as a percentage of total height.
+/// When TOP_ROW_CURSOR is on, the main pad surface is the remaining lower area.
 pub const KEYBOARD_TOP_ROW_HEIGHT: f64 = 0.25;
 
-/// Boundaries of keys on the top row of keyboard
+/// Pixels of horizontal top-row travel per KEY_LEFT / KEY_RIGHT (text caret).
+pub const CARET_STEP_PX: i32 = 36;
+
+/// Boundaries of keys on the top row of keyboard (shift/sym/back/recents/fn/alt).
 /// The mapping from keyboard to touchpad isn't exactly linear, for whatever reason,
 /// so here's my best attempt at making detecting the corresponding key somewhat usable.
 pub const KEYBOARD_TOP_ROW_KEY_BOUNDS: [i32; 6] = [180, 450, 713, 994, 1254, 1440];
