@@ -173,7 +173,25 @@ fn main() -> eyre::Result<()> {
 
     // TOP_ROW_NOGRAB=1: share pad with Android trackpad (text-caret only path).
     if !no_grab {
-        if let Err(e) = touchpad_dev.grab() {
+        // Steal immediately, including mid-gesture. One try used to leave
+        // InputReader owning the slot until finger-up → HID waited for lift.
+        let mut grab_err = None;
+        for attempt in 0..25 {
+            match touchpad_dev.grab() {
+                Ok(()) => {
+                    grab_err = None;
+                    if attempt > 0 {
+                        info!(attempt, "touchPad grab ok (retried)");
+                    }
+                    break;
+                }
+                Err(e) => {
+                    grab_err = Some(e);
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+            }
+        }
+        if let Some(e) = grab_err {
             warn!(
                 "Unable to grab touchpad device, continuing but there might be conflicts with system gestures: {e:?}"
             );

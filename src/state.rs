@@ -1,7 +1,7 @@
 use std::time::SystemTime;
 
 use evdev::{AbsoluteAxisCode, Device, EventSummary, KeyCode, SynchronizationCode};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 #[derive(Clone, Debug)]
 pub(crate) struct TouchState {
@@ -19,14 +19,48 @@ pub(crate) struct TouchStateTracker {
 
 impl TouchStateTracker {
     pub(crate) fn new(inner: Device) -> Self {
+        // HID exclusive start while the finger is already down: BTN_TOUCH is
+        // edge-triggered. Seed from EVIOCGKEY / EVIOCGABS so the first SYN
+        // emits instead of waiting for lift + new down.
+        let mut last_state = TouchState {
+            x: 0,
+            y: 0,
+            down: false,
+            timestamp: SystemTime::now(),
+        };
+        if let Ok(keys) = inner.get_key_state() {
+            last_state.down = keys.contains(KeyCode::BTN_TOUCH)
+                || keys.contains(KeyCode::BTN_TOOL_FINGER);
+        }
+        if let Ok(abs) = inner.get_absinfo() {
+            let mut mx = None;
+            let mut my = None;
+            let mut sx = None;
+            let mut sy = None;
+            for (code, info) in abs {
+                if code == AbsoluteAxisCode::ABS_MT_POSITION_X {
+                    mx = Some(info.value());
+                } else if code == AbsoluteAxisCode::ABS_MT_POSITION_Y {
+                    my = Some(info.value());
+                } else if code == AbsoluteAxisCode::ABS_X {
+                    sx = Some(info.value());
+                } else if code == AbsoluteAxisCode::ABS_Y {
+                    sy = Some(info.value());
+                }
+            }
+            last_state.x = mx.or(sx).unwrap_or(0);
+            last_state.y = my.or(sy).unwrap_or(0);
+        }
+        if last_state.down {
+            info!(
+                x = last_state.x,
+                y = last_state.y,
+                "seed live contact (HID attach mid-touch)"
+            );
+        }
         Self {
             inner,
-            last_state: TouchState {
-                x: 0,
-                y: 0,
-                down: false,
-                timestamp: SystemTime::now(),
-            },
+            last_state,
             pending_events: vec![],
         }
     }
@@ -46,13 +80,16 @@ impl TouchStateTracker {
                     } else if *code == AbsoluteAxisCode::ABS_MT_POSITION_Y {
                         ret.y = *val;
                         seen_y = true;
+                    } else if *code == AbsoluteAxisCode::ABS_MT_TRACKING_ID {
+                        ret.down = *val >= 0;
+                        seen_btn = true;
                     }
                     ret.timestamp = ev.timestamp();
                 }
                 EventSummary::Key(ev, code, state) => {
                     // Technically the touchpad emits both BTN_TOUCH and BTN_TOOL_FINGER, but we only
                     // use one here.
-                    if *code == KeyCode::BTN_TOUCH {
+                    if *code == KeyCode::BTN_TOUCH || *code == KeyCode::BTN_TOOL_FINGER {
                         ret.down = *state == 1;
                     }
                     ret.timestamp = ev.timestamp();
