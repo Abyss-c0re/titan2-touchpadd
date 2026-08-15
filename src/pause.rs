@@ -114,7 +114,6 @@ impl GateInner {
     fn tick(&mut self) -> bool {
         let cool_ms = read_cool_ms();
         self.cool = Duration::from_millis(cool_ms);
-        self.mode = read_mode();
 
         self.plane_pause = PAUSE_FILES.iter().any(|p| {
             read_trim(p)
@@ -122,10 +121,22 @@ impl GateInner {
                 .unwrap_or(false)
         });
 
+        let prev_mode = self.mode.clone();
+        self.mode = read_mode();
+        // HID exclusive → phone trackpad: mode flip must emit NOW, not after cool.
+        if self.mode != prev_mode {
+            self.unlock_at = None;
+            self.last_source = "mode";
+        }
+
         if self.plane_pause && !self.prev_plane_pause {
             self.unlock_at = Some(Instant::now() + self.cool);
             self.last_source = "plane";
             debug!(cool_ms, "plane pause rising edge → cool arm");
+        }
+        if !self.plane_pause && self.prev_plane_pause {
+            self.unlock_at = None;
+            self.last_source = "unpark";
         }
         self.prev_plane_pause = self.plane_pause;
 
@@ -242,7 +253,7 @@ impl PadPauseGate {
         let cool_ms = read_cool_ms();
         info!(
             cool_ms,
-            "PadPauseGate: in-process park (50ms poll; plane edge + key cool)"
+            "PadPauseGate: in-process park (2ms poll; mode/unpark instant)"
         );
 
         let paused = Arc::new(AtomicBool::new(env_force));
@@ -269,7 +280,7 @@ impl PadPauseGate {
             .name("tp-pause".into())
             .spawn(move || {
                 loop {
-                    thread::sleep(Duration::from_millis(50));
+                    thread::sleep(Duration::from_millis(2));
                     let p = match inner.lock() {
                         Ok(mut g) => g.tick(),
                         Err(_) => continue,
