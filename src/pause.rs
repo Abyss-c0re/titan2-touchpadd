@@ -2,7 +2,7 @@
 //! Process stays up; drops REL/BTN while parked. No kill → no native ABS residual.
 //!
 //! Plane: docs/project/PAD_TOUCHPADD_CONTRACT.md
-//! - titan2_pad_cursor_pause rising edge + key activity → cool window
+//! - titan2_pad_cursor_pause=1 holds park; key activity / rising edge → cool window
 //! - cool_ms from titan2_pad_cursor_cool_ms / pause_ms (100–5000, default 500)
 //! - env PAUSE=1 forces park
 //! Status: /data/local/tmp/titan2_touchpadd_status
@@ -31,6 +31,10 @@ const COOL_FILES: &[&str] = &[
     "/data/local/tmp/titan2_pad_cursor_cool_ms",
     "/data/misc/titan2/titan2_pad_cursor_pause_ms",
     "/data/local/tmp/titan2_pad_cursor_pause_ms",
+];
+const UNTIL_FILES: &[&str] = &[
+    "/data/misc/titan2/titan2_pad_cursor_pause_until",
+    "/data/local/tmp/titan2_pad_cursor_pause_until",
 ];
 const ACTIVITY_FILES: &[&str] = &[
     "/data/local/tmp/titan2_key_activity",
@@ -71,6 +75,10 @@ fn read_cool_ms() -> u64 {
         }
     }
     500
+}
+
+pub(crate) fn pad_mode_is_mouse() -> bool {
+    read_mode() == "mouse"
 }
 
 fn read_mode() -> String {
@@ -134,10 +142,7 @@ impl GateInner {
             self.last_source = "plane";
             debug!(cool_ms, "plane pause rising edge → cool arm");
         }
-        if !self.plane_pause && self.prev_plane_pause {
-            self.unlock_at = None;
-            self.last_source = "unpark";
-        }
+        // Keep unlock_at if pause flickers to 0 (watch used to write that mid-word).
         self.prev_plane_pause = self.plane_pause;
 
         let mut best_body = String::new();
@@ -203,8 +208,33 @@ impl GateInner {
         paused
     }
 
+    fn plane_hold(&self) -> bool {
+        if !self.plane_pause {
+            return false;
+        }
+        // pause_until is a stale-Handler guard (unix seconds). 0 = no TTL.
+        let mut until = 0u64;
+        for p in UNTIL_FILES {
+            if let Some(s) = read_trim(p) {
+                if let Ok(v) = s.parse::<u64>() {
+                    until = v;
+                    break;
+                }
+            }
+        }
+        if until == 0 {
+            return true;
+        }
+        wall_unix_s() <= until.saturating_add(1)
+    }
+
     fn compute_paused(&self) -> bool {
         if self.env_force {
+            return true;
+        }
+        // Whole typing burst: pause=1 holds park. Same-second keys share one
+        // unix-s activity stamp and used to unpark after first-key cool.
+        if self.plane_hold() {
             return true;
         }
         if let Some(until) = self.unlock_at {
