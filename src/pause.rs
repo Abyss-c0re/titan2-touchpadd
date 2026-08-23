@@ -32,10 +32,6 @@ const COOL_FILES: &[&str] = &[
     "/data/misc/titan2/titan2_pad_cursor_pause_ms",
     "/data/local/tmp/titan2_pad_cursor_pause_ms",
 ];
-const UNTIL_FILES: &[&str] = &[
-    "/data/misc/titan2/titan2_pad_cursor_pause_until",
-    "/data/local/tmp/titan2_pad_cursor_pause_until",
-];
 const ACTIVITY_FILES: &[&str] = &[
     "/data/local/tmp/titan2_key_activity",
     "/data/misc/titan2/titan2_key_activity",
@@ -209,23 +205,9 @@ impl GateInner {
     }
 
     fn plane_hold(&self) -> bool {
-        if !self.plane_pause {
-            return false;
-        }
-        // pause_until is a stale-Handler guard (unix seconds). 0 = no TTL.
-        let mut until = 0u64;
-        for p in UNTIL_FILES {
-            if let Some(s) = read_trim(p) {
-                if let Ok(v) = s.parse::<u64>() {
-                    until = v;
-                    break;
-                }
-            }
-        }
-        if until == 0 {
-            return true;
-        }
-        wall_unix_s() <= until.saturating_add(1)
+        // Java Handler writes pause=0. A leftover pause_until must not
+        // unpark while the plane is still 1.
+        self.plane_pause
     }
 
     fn compute_paused(&self) -> bool {
