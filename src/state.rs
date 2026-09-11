@@ -1,3 +1,7 @@
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::SystemTime;
 
 use evdev::{AbsoluteAxisCode, Device, EventSummary, KeyCode, SynchronizationCode};
@@ -13,12 +17,14 @@ pub(crate) struct TouchState {
 
 pub(crate) struct TouchStateTracker {
     inner: Device,
+    want_grab: Arc<AtomicBool>,
+    grabbed: bool,
     last_state: TouchState,
     pending_events: Vec<EventSummary>,
 }
 
 impl TouchStateTracker {
-    pub(crate) fn new(inner: Device) -> Self {
+    pub(crate) fn new(inner: Device, want_grab: Arc<AtomicBool>) -> Self {
         // HID exclusive start while the finger is already down: BTN_TOUCH is
         // edge-triggered. Seed from EVIOCGKEY / EVIOCGABS so the first SYN
         // emits instead of waiting for lift + new down.
@@ -60,8 +66,26 @@ impl TouchStateTracker {
         }
         Self {
             inner,
+            want_grab,
+            grabbed: false,
             last_state,
             pending_events: vec![],
+        }
+    }
+
+    fn apply_grab(&mut self) {
+        let want = self.want_grab.load(Ordering::Relaxed);
+        if want == self.grabbed {
+            return;
+        }
+        if want {
+            if self.inner.grab().is_ok() {
+                self.grabbed = true;
+                info!("touchPad grab (mouse mode)");
+            }
+        } else if self.inner.ungrab().is_ok() {
+            self.grabbed = false;
+            info!("touchPad ungrab (trackpad / off)");
         }
     }
 
@@ -113,6 +137,7 @@ impl Iterator for TouchStateTracker {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
+            self.apply_grab();
             // It's OK to call collect here since the evdev crate's iterator will always terminate on a SYN_REPORT
             let Ok(events) = self.inner.fetch_events().map(|ev| ev.collect::<Vec<_>>()) else {
                 error!("Failed to fetch more events, terminating");

@@ -1,5 +1,6 @@
 use std::{
     sync::{
+        atomic::AtomicBool,
         Arc, Mutex,
         mpsc::{self, RecvTimeoutError, TrySendError},
     },
@@ -136,6 +137,7 @@ impl GestureDetector {
     pub(crate) fn start<I: 'static + TouchGestureInhibitor>(
         keyboard_features_enabled: bool,
         touchpad_dev: Device,
+        want_grab: Arc<AtomicBool>,
         mut inhibitor: I,
     ) -> eyre::Result<impl Iterator<Item = eyre::Result<Gesture>>> {
         // First acquire some basic properties of the device
@@ -167,7 +169,7 @@ impl GestureDetector {
 
         let (event_tx, event_rx) = mpsc::sync_channel(16);
         thread::spawn(move || {
-            let tracker = TouchStateTracker::new(touchpad_dev);
+            let tracker = TouchStateTracker::new(touchpad_dev, want_grab);
 
             for event in tracker {
                 if let Err(TrySendError::Disconnected(_)) = event_tx.try_send(event) {

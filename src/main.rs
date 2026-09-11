@@ -83,6 +83,7 @@ fn main() -> eyre::Result<()> {
         let mut axes = AttributeSet::new();
         axes.insert(RelativeAxisCode::REL_X);
         axes.insert(RelativeAxisCode::REL_Y);
+        axes.insert(RelativeAxisCode::REL_WHEEL);
         axes.insert(RelativeAxisCode::REL_WHEEL_HI_RES);
         axes
     };
@@ -171,33 +172,10 @@ fn main() -> eyre::Result<()> {
         None
     };
 
-    // TOP_ROW_NOGRAB=1: share pad with Android trackpad (text-caret only path).
-    if !no_grab {
-        // Steal immediately, including mid-gesture. One try used to leave
-        // InputReader owning the slot until finger-up → HID waited for lift.
-        let mut grab_err = None;
-        for attempt in 0..25 {
-            match touchpad_dev.grab() {
-                Ok(()) => {
-                    grab_err = None;
-                    if attempt > 0 {
-                        info!(attempt, "touchPad grab ok (retried)");
-                    }
-                    break;
-                }
-                Err(e) => {
-                    grab_err = Some(e);
-                    std::thread::sleep(std::time::Duration::from_millis(2));
-                }
-            }
-        }
-        if let Some(e) = grab_err {
-            warn!(
-                "Unable to grab touchpad device, continuing but there might be conflicts with system gestures: {e:?}"
-            );
-        }
-    } else {
-        info!("TOP_ROW_NOGRAB — not grabbing touchPad (trackpad coexistence)");
+    // Grab is mode-driven in the event thread: mouse=grab, trackpad/off=ungrab.
+    // Never exclude the pad from EventHub — that kills both modes.
+    if no_grab {
+        info!("TOP_ROW_NOGRAB — tracker will not grab (caret-only)");
     }
 
     // Grab TitanKey only when we own keyboard features

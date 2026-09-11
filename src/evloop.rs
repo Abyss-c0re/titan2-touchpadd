@@ -1,7 +1,10 @@
 use std::{
     fs,
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -15,7 +18,7 @@ use crate::{
     constants::NUMERIC_KEYCODES,
     gesture::{Gesture, GestureDetector, SwipeGesture},
     keyboard::{KeyboardHandler, NoKeyboardInhibitor},
-    pause::PadPauseGate,
+    pause::{self, PadPauseGate},
 };
 
 const KEY_ACTIVITY_FILES: &[&str] = &[
@@ -266,7 +269,19 @@ fn run_evloop_inner(
     keyboard_uinput_dev: Option<Arc<Mutex<VirtualDevice>>>,
     text_nav_dev: Option<Arc<Mutex<VirtualDevice>>>,
 ) -> eyre::Result<()> {
-    let detector = GestureDetector::start(keyboard_features_enabled, touchpad_dev, inhibitor)?;
+    let no_grab = matches!(
+        std::env::var("TOP_ROW_NOGRAB").as_deref(),
+        Ok("1") | Ok("true") | Ok("on") | Ok("yes")
+    );
+    let want_grab = Arc::new(AtomicBool::new(
+        !no_grab && pause::pad_mode_is_mouse(),
+    ));
+    let detector = GestureDetector::start(
+        keyboard_features_enabled,
+        touchpad_dev,
+        Arc::clone(&want_grab),
+        inhibitor,
+    )?;
 
     info!("Main event loop started");
 
@@ -293,9 +308,13 @@ fn run_evloop_inner(
     let mut left_latch = false;
     let mut last_key_sig = key_activity_sig();
     let mut last_gesture_cfg = GestureCfg::default();
+    // Android InputReader ignores REL_WHEEL_HI_RES-only (no REL_WHEEL).
+    // 48 hi-res units ≈ 1 notch (Linux is 120; pad deltas are smaller).
+    let mut wheel_acc: i32 = 0;
 
     for gesture in detector {
         pause_gate.refresh();
+        want_grab.store(!no_grab && pause::pad_mode_is_mouse(), Ordering::Relaxed);
         let gcfg = read_gesture_cfg(env_tap);
         if gcfg != last_gesture_cfg {
             info!(
@@ -404,11 +423,36 @@ fn run_evloop_inner(
             Gesture::Click | Gesture::LongClick | Gesture::DragStart | Gesture::DragEnd => {}
             Gesture::VerticalScroll(val) if gcfg.scroll => {
                 debug!("Vertical scroll!");
-                uinput_dev.emit(&[InputEvent::new(
-                    EventType::RELATIVE.0,
-                    RelativeAxisCode::REL_WHEEL_HI_RES.0,
-                    val,
-                )])?;
+                wheel_acc += val;
+                let mut notch = 0;
+                while wheel_acc >= 48 {
+                    notch += 1;
+                    wheel_acc -= 48;
+                }
+                while wheel_acc <= -48 {
+                    notch -= 1;
+                    wheel_acc += 48;
+                }
+                if notch != 0 {
+                    uinput_dev.emit(&[
+                        InputEvent::new(
+                            EventType::RELATIVE.0,
+                            RelativeAxisCode::REL_WHEEL.0,
+                            notch,
+                        ),
+                        InputEvent::new(
+                            EventType::RELATIVE.0,
+                            RelativeAxisCode::REL_WHEEL_HI_RES.0,
+                            val,
+                        ),
+                    ])?;
+                } else {
+                    uinput_dev.emit(&[InputEvent::new(
+                        EventType::RELATIVE.0,
+                        RelativeAxisCode::REL_WHEEL_HI_RES.0,
+                        val,
+                    )])?;
+                }
             }
             Gesture::VerticalScroll(_) => {
                 debug!("Vertical scroll ignored (pad_scroll off)");
