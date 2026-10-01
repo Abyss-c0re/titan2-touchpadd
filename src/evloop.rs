@@ -3,8 +3,9 @@ use std::{
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        mpsc, Arc, Mutex,
     },
+    thread,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -16,7 +17,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     constants::NUMERIC_KEYCODES,
-    gesture::{Gesture, GestureDetector, SwipeGesture},
+    gesture::{Gesture, GestureDetector, SourceTune, SwipeGesture, TouchGestureInhibitor},
     keyboard::{KeyboardHandler, NoKeyboardInhibitor},
     pause::{self, PadPauseGate},
 };
@@ -190,7 +191,10 @@ fn read_gesture_cfg(env_tap_master: bool) -> GestureCfg {
 
 pub(crate) fn run_evloop(
     keyboard_features_enabled: bool,
-    touchpad_dev: Device,
+    touchpad_dev: Option<Device>,
+    sub_dev: Option<Device>,
+    flip_x: bool,
+    flip_y: bool,
     keyboard_dev: Option<Device>,
     uinput_dev: VirtualDevice,
     keyboard_uinput_dev: Option<Arc<Mutex<VirtualDevice>>>,
@@ -202,6 +206,9 @@ pub(crate) fn run_evloop(
         return run_evloop_inner(
             keyboard_features_enabled,
             touchpad_dev,
+            sub_dev,
+            flip_x,
+            flip_y,
             inhibitor,
             uinput_dev,
             keyboard_uinput_dev,
@@ -212,6 +219,9 @@ pub(crate) fn run_evloop(
     run_evloop_inner(
         keyboard_features_enabled,
         touchpad_dev,
+        sub_dev,
+        flip_x,
+        flip_y,
         inhibitor,
         uinput_dev,
         keyboard_uinput_dev,
@@ -261,10 +271,26 @@ fn emit_caret_step(
     Ok(())
 }
 
+fn forward_gestures(
+    src: mpsc::Receiver<eyre::Result<Gesture>>,
+    tx: mpsc::SyncSender<eyre::Result<Gesture>>,
+) {
+    thread::spawn(move || {
+        for g in src {
+            if tx.send(g).is_err() {
+                break;
+            }
+        }
+    });
+}
+
 fn run_evloop_inner(
     keyboard_features_enabled: bool,
-    touchpad_dev: Device,
-    inhibitor: impl 'static + crate::gesture::TouchGestureInhibitor,
+    touchpad_dev: Option<Device>,
+    sub_dev: Option<Device>,
+    flip_x: bool,
+    flip_y: bool,
+    inhibitor: impl 'static + TouchGestureInhibitor,
     mut uinput_dev: VirtualDevice,
     keyboard_uinput_dev: Option<Arc<Mutex<VirtualDevice>>>,
     text_nav_dev: Option<Arc<Mutex<VirtualDevice>>>,
@@ -273,15 +299,41 @@ fn run_evloop_inner(
         std::env::var("TOP_ROW_NOGRAB").as_deref(),
         Ok("1") | Ok("true") | Ok("on") | Ok("yes")
     );
-    let want_grab = Arc::new(AtomicBool::new(
-        !no_grab && pause::pad_mode_is_mouse(),
-    ));
-    let detector = GestureDetector::start(
-        keyboard_features_enabled,
-        touchpad_dev,
-        Arc::clone(&want_grab),
-        inhibitor,
-    )?;
+    let want_grab = Arc::new(AtomicBool::new(pause::want_hw_grab(no_grab)));
+    // One uinput owner. Each digitizer sends Gesture values here.
+    let (gesture_tx, gesture_rx) = mpsc::sync_channel(64);
+    let mut inhibitor_slot = Some(inhibitor);
+    if let Some(dev) = touchpad_dev {
+        let src = GestureDetector::start(
+            keyboard_features_enabled,
+            dev,
+            Arc::clone(&want_grab),
+            inhibitor_slot.take().expect("inhibitor"),
+            SourceTune::default(),
+        )?;
+        forward_gestures(src, gesture_tx.clone());
+    }
+    if let Some(dev) = sub_dev {
+        // Rear lid stays grabbed so InputReader cannot deliver it as a touchscreen.
+        let sub_grab = Arc::new(AtomicBool::new(true));
+        let src = GestureDetector::start(
+            false,
+            dev,
+            sub_grab,
+            NoKeyboardInhibitor,
+            SourceTune {
+                full_surface: true,
+                flip_x,
+                flip_y,
+            },
+        )?;
+        forward_gestures(src, gesture_tx.clone());
+    }
+    if let Some(mut inhibitor) = inhibitor_slot.take() {
+        // Rear-only: keep the keyboard inhibit thread drained.
+        thread::spawn(move || while inhibitor.next_should_inhibit().is_ok() {});
+    }
+    drop(gesture_tx);
 
     info!("Main event loop started");
 
@@ -312,9 +364,9 @@ fn run_evloop_inner(
     // 48 hi-res units ≈ 1 notch (Linux is 120; pad deltas are smaller).
     let mut wheel_acc: i32 = 0;
 
-    for gesture in detector {
+    for gesture in gesture_rx {
         pause_gate.refresh();
-        want_grab.store(!no_grab && pause::pad_mode_is_mouse(), Ordering::Relaxed);
+        want_grab.store(pause::want_hw_grab(no_grab), Ordering::Relaxed);
         let gcfg = read_gesture_cfg(env_tap);
         if gcfg != last_gesture_cfg {
             info!(

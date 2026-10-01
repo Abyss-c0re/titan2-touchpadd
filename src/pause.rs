@@ -40,6 +40,16 @@ const MODE_FILES: &[&str] = &[
     "/data/misc/titan2/titan2_pad_mode",
     "/data/local/tmp/titan2_pad_mode",
 ];
+const HID_SESSION_FILES: &[&str] = &[
+    "/data/misc/titan2/titan2_usb_hid_session",
+    "/data/local/tmp/titan2_usb_hid_session",
+    "/data/user/0/com.titanus2.usbhid/files/titan2_usb_hid_session",
+];
+const HID_MOUSE_FILES: &[&str] = &[
+    "/data/misc/titan2/titan2_usb_hid_mouse",
+    "/data/local/tmp/titan2_usb_hid_mouse",
+    "/data/user/0/com.titanus2.usbhid/files/titan2_usb_hid_mouse",
+];
 
 fn read_trim(path: &str) -> Option<String> {
     fs::read_to_string(path)
@@ -75,6 +85,29 @@ fn read_cool_ms() -> u64 {
 
 pub(crate) fn pad_mode_is_mouse() -> bool {
     read_mode() == "mouse"
+}
+
+fn plane_flag_on(files: &[&str]) -> bool {
+    for p in files {
+        if let Some(s) = read_trim(p) {
+            return parse_bool_on(&s);
+        }
+    }
+    false
+}
+
+/// HID session with physical pad redirect (exclusive or share).
+/// pad_mode=off still runs a HID-owned temporary touchpadd — the hardware
+/// pad must stay grabbed so Android InputReader does not steal the cursor.
+pub(crate) fn hid_session_owns_pad() -> bool {
+    plane_flag_on(HID_SESSION_FILES) && plane_flag_on(HID_MOUSE_FILES)
+}
+
+pub(crate) fn want_hw_grab(no_grab: bool) -> bool {
+    if no_grab {
+        return false;
+    }
+    pad_mode_is_mouse() || hid_session_owns_pad()
 }
 
 fn read_mode() -> String {

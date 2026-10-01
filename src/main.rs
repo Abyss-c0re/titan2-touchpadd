@@ -66,12 +66,56 @@ fn main() -> eyre::Result<()> {
         Ok("1") | Ok("true") | Ok("on") | Ok("yes")
     );
 
-    let (Some(mut touchpad_dev), keyboard_dev) =
-        find_touchpad_and_keyboard_dev(keyboard_features_enabled)?
-    else {
-        error!("No touchpad device found, exitting");
-        return Err(eyre!("No touchpad device found"));
+    // sub_touch HID surface: PAD_SURFACE selects touchPad and/or sub_touch.
+    // Marker string is how pad-apply picks this binary over the system one.
+    info!("sub_touch HID surface PAD_SURFACE selector (touchPad and/or sub_touch)");
+    let surface = env_pad_surface();
+    info!("sub_touch HID surface PAD_SURFACE={surface}");
+    let flip_x = env_flip_default_on("FLIP_X");
+    let flip_y = env_flip_default_on("FLIP_Y");
+    let want_pad = surface == "hw" || surface == "both";
+    let want_sub = surface == "sub" || surface == "both";
+
+    let (mut touchpad_dev, keyboard_dev) =
+        find_touchpad_and_keyboard_dev(keyboard_features_enabled, want_pad)?;
+    if !want_pad {
+        touchpad_dev = None;
+    }
+    let sub_dev = if want_sub {
+        open_input_by_name("sub_touch")
+    } else {
+        None
     };
+    match surface.as_str() {
+        "both" => {
+            if touchpad_dev.is_none() {
+                warn!("PAD_SURFACE=both but touchPad missing — rear only");
+            }
+            if sub_dev.is_none() {
+                warn!("PAD_SURFACE=both but sub_touch missing — keyboard pad only");
+            }
+        }
+        "sub" => {
+            if sub_dev.is_none() {
+                error!("PAD_SURFACE=sub but sub_touch missing");
+                return Err(eyre!("No sub_touch device found"));
+            }
+        }
+        "hw" => {
+            if touchpad_dev.is_none() {
+                error!("No touchpad device found, exitting");
+                return Err(eyre!("No touchpad device found"));
+            }
+        }
+        _ => {
+            error!("PAD_SURFACE={surface} has no pointer source");
+            return Err(eyre!("PAD_SURFACE none"));
+        }
+    }
+    if touchpad_dev.is_none() && sub_dev.is_none() {
+        error!("No pointer source for PAD_SURFACE={surface}");
+        return Err(eyre!("No pointer source"));
+    }
 
     if keyboard_features_enabled && keyboard_dev.is_none() {
         error!("KEYBOARD_FEATURES=true but TitanKey not found");
@@ -172,8 +216,9 @@ fn main() -> eyre::Result<()> {
         None
     };
 
-    // Grab is mode-driven in the event thread: mouse=grab, trackpad/off=ungrab.
-    // Never exclude the pad from EventHub — that kills both modes.
+    // Grab is live in the event thread: mouse mode OR HID session mouse=1.
+    // pad_mode=off during HID still grabs (HID-owned virt mouse). Trackpad
+    // ungrabs for native ABS. Never EventHub-exclude the pad.
     if no_grab {
         info!("TOP_ROW_NOGRAB — tracker will not grab (caret-only)");
     }
@@ -193,6 +238,9 @@ fn main() -> eyre::Result<()> {
     evloop::run_evloop(
         keyboard_features_enabled,
         touchpad_dev,
+        sub_dev,
+        flip_x,
+        flip_y,
         keyboard_dev,
         uinput_dev,
         keyboard_uinput_dev,
@@ -205,6 +253,7 @@ fn main() -> eyre::Result<()> {
 /// that race with hid_bridge EVIOCGRAB under exclusive keys=1.
 fn find_touchpad_and_keyboard_dev(
     want_keyboard: bool,
+    open_touchpad: bool,
 ) -> eyre::Result<(Option<Device>, Option<Device>)> {
     let mut touchpad_dev = None;
     let mut keyboard_dev = None;
@@ -242,6 +291,9 @@ fn find_touchpad_and_keyboard_dev(
                 info!("Skipping TitanKey (KEYBOARD_FEATURES off) at /dev/input/{filename}");
                 continue;
             }
+            if name == "touchPad" && !open_touchpad {
+                continue;
+            }
             if name != "touchPad" && name != "TitanKey" {
                 continue;
             }
@@ -277,3 +329,60 @@ fn find_touchpad_and_keyboard_dev(
 
     Ok((touchpad_dev, keyboard_dev))
 }
+
+fn env_pad_surface() -> String {
+    match std::env::var("PAD_SURFACE") {
+        Ok(v) => match v.trim().to_ascii_lowercase().as_str() {
+            "sub" | "rear" | "sub_touch" => "sub".to_string(),
+            "both" | "all" | "dual" => "both".to_string(),
+            "none" | "off" => "none".to_string(),
+            _ => "hw".to_string(),
+        },
+        Err(_) => "hw".to_string(),
+    }
+}
+
+fn env_flip_default_on(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            !(v == "0" || v == "false" || v == "off" || v == "no")
+        }
+        Err(_) => true,
+    }
+}
+
+/// Open the first event node whose sysfs name matches. Does not open other devices.
+fn open_input_by_name(want: &str) -> Option<Device> {
+    let entries = std::fs::read_dir("/dev/input").ok()?;
+    for ent in entries {
+        let Ok(ent) = ent else { continue };
+        let Ok(file_type) = ent.file_type() else { continue };
+        if !file_type.is_char_device() {
+            continue;
+        }
+        let Ok(filename) = ent.file_name().into_string() else {
+            continue;
+        };
+        if !filename.starts_with("event") {
+            continue;
+        }
+        let sysfs_name = std::fs::read_to_string(format!(
+            "/sys/class/input/{filename}/device/name"
+        ))
+        .ok()
+        .map(|raw| raw.trim().to_string());
+        if sysfs_name.as_deref() != Some(want) {
+            continue;
+        }
+        match Device::open(ent.path()) {
+            Ok(dev) => {
+                info!("Found {want} at /dev/input/{filename}");
+                return Some(dev);
+            }
+            Err(e) => warn!("Unable to open {want} at /dev/input/{filename}: {e}"),
+        }
+    }
+    None
+}
+

@@ -131,6 +131,29 @@ pub(crate) struct GestureDetector {
     long_click_emitted: bool,
     /// Accumulated horizontal motion on top-row for text-caret steps.
     caret_accum_x: i32,
+    /// Rear lid: negate REL_X. Keyboard pad leaves this false.
+    flip_x: bool,
+    /// Rear lid: negate REL_Y. Keyboard pad leaves this false.
+    flip_y: bool,
+}
+
+/// Per-source gesture tune. Rear sub_touch is a full lid (no keyboard top-row
+/// split) and may flip axes. The keyboard pad keeps env defaults.
+#[derive(Clone, Copy)]
+pub(crate) struct SourceTune {
+    pub full_surface: bool,
+    pub flip_x: bool,
+    pub flip_y: bool,
+}
+
+impl Default for SourceTune {
+    fn default() -> Self {
+        Self {
+            full_surface: false,
+            flip_x: false,
+            flip_y: false,
+        }
+    }
 }
 
 impl GestureDetector {
@@ -139,27 +162,42 @@ impl GestureDetector {
         touchpad_dev: Device,
         want_grab: Arc<AtomicBool>,
         mut inhibitor: I,
-    ) -> eyre::Result<impl Iterator<Item = eyre::Result<Gesture>>> {
+        tune: SourceTune,
+    ) -> eyre::Result<mpsc::Receiver<eyre::Result<Gesture>>> {
         // First acquire some basic properties of the device
-        let mut max_x = -1;
-        let mut max_y = -1;
+        let mut max_x_mt = -1;
+        let mut max_y_mt = -1;
+        let mut max_x_st = -1;
+        let mut max_y_st = -1;
         for (axis, info) in touchpad_dev.get_absinfo()? {
             if axis == AbsoluteAxisCode::ABS_MT_POSITION_X {
-                max_x = info.maximum();
+                max_x_mt = info.maximum();
             } else if axis == AbsoluteAxisCode::ABS_MT_POSITION_Y {
-                max_y = info.maximum()
+                max_y_mt = info.maximum();
+            } else if axis == AbsoluteAxisCode::ABS_X {
+                max_x_st = info.maximum();
+            } else if axis == AbsoluteAxisCode::ABS_Y {
+                max_y_st = info.maximum();
             }
         }
-
+        let max_x = if max_x_mt >= 0 { max_x_mt } else { max_x_st };
+        let max_y = if max_y_mt >= 0 { max_y_mt } else { max_y_st };
         if max_x == -1 || max_y == -1 {
             return Err(eyre!("No max X / Y coordinates available"));
         }
 
         // TOP_ROW_CURSOR: independent of KEYBOARD_FEATURES / TitanKey grab.
         // Default on so product mouse + HID paths get OEM top-row cursor without dual TitanKey.
-        let top_row_cursor = env_flag_default_on("TOP_ROW_CURSOR");
-        // TOP_ROW_ONLY: standalone module — only top-row cursor strip (no lower pad).
-        let top_row_only = env_flag_default_off("TOP_ROW_ONLY");
+        let top_row_cursor = if tune.full_surface {
+            false
+        } else {
+            env_flag_default_on("TOP_ROW_CURSOR")
+        };
+        let top_row_only = if tune.full_surface {
+            false
+        } else {
+            env_flag_default_off("TOP_ROW_ONLY")
+        };
         let top_row_cursor = top_row_cursor || top_row_only;
 
         info!(
@@ -214,6 +252,8 @@ impl GestureDetector {
             dragging: false,
             long_click_emitted: false,
             caret_accum_x: 0,
+            flip_x: tune.flip_x,
+            flip_y: tune.flip_y,
             max_x,
             max_y,
         };
@@ -224,7 +264,7 @@ impl GestureDetector {
             }
         });
 
-        Ok(gesture_rx.into_iter())
+        Ok(gesture_rx)
     }
 
     #[inline]
@@ -466,6 +506,13 @@ impl GestureDetector {
     /// Emits a gesture event or error, but skips if the gesture event channel is already full.
     /// Returns an error if trhe gesture event channel is closed
     fn emit(&self, gesture_or_err: eyre::Result<Gesture>) -> eyre::Result<()> {
+        let gesture_or_err = gesture_or_err.map(|g| match g {
+            Gesture::PointerMove(x, y) => Gesture::PointerMove(
+                if self.flip_x { -x } else { x },
+                if self.flip_y { -y } else { y },
+            ),
+            other => other,
+        });
         if gesture_or_err.is_ok() {
             if let Err(TrySendError::Disconnected(_)) = self.gesture_tx.try_send(gesture_or_err) {
                 return Err(eyre!("channel closed, shutting down"));
