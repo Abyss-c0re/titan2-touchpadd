@@ -1,8 +1,9 @@
+use std::os::fd::AsRawFd;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use evdev::{AbsoluteAxisCode, Device, EventSummary, KeyCode, SynchronizationCode};
 use tracing::{debug, error, info, warn};
@@ -19,6 +20,7 @@ pub(crate) struct TouchStateTracker {
     inner: Device,
     want_grab: Arc<AtomicBool>,
     grabbed: bool,
+    blocking_set: bool,
     last_state: TouchState,
     pending_events: Vec<EventSummary>,
 }
@@ -68,6 +70,7 @@ impl TouchStateTracker {
             inner,
             want_grab,
             grabbed: false,
+            blocking_set: false,
             last_state,
             pending_events: vec![],
         }
@@ -81,11 +84,11 @@ impl TouchStateTracker {
         if want {
             if self.inner.grab().is_ok() {
                 self.grabbed = true;
-                info!("touchPad grab (mouse mode)");
+                info!("touchPad grab (mouse / HID session)");
             }
         } else if self.inner.ungrab().is_ok() {
             self.grabbed = false;
-            info!("touchPad ungrab (trackpad / off)");
+            info!("touchPad ungrab (trackpad / phone off)");
         }
     }
 
@@ -136,13 +139,28 @@ impl Iterator for TouchStateTracker {
     type Item = eyre::Result<TouchState>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // 2.250 heat: idle must block in poll with a real timeout — never a
+        // zero-timeout read/ioctl spin when the pad is quiet.
+        // fetch_events blocks only if the fd is blocking; enforce that once.
+        if !self.blocking_set {
+            let _ = self.inner.set_nonblocking(false);
+            self.blocking_set = true;
+        }
         loop {
             self.apply_grab();
-            // It's OK to call collect here since the evdev crate's iterator will always terminate on a SYN_REPORT
+            // Wait up to 500ms for input; park the core while quiet.
+            if !poll_fd_readable(self.inner.as_raw_fd(), 500) {
+                continue;
+            }
             let Ok(events) = self.inner.fetch_events().map(|ev| ev.collect::<Vec<_>>()) else {
                 error!("Failed to fetch more events, terminating");
                 return None;
             };
+            if events.is_empty() {
+                // Spurious wake — do not tight-loop
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
 
             for cur_event in events {
                 let cur_event = cur_event.destructure();
@@ -165,3 +183,29 @@ impl Iterator for TouchStateTracker {
         }
     }
 }
+
+/// libc poll(2) wrapper — true if fd is readable (or on error to allow fetch to report).
+fn poll_fd_readable(fd: std::os::fd::RawFd, timeout_ms: i32) -> bool {
+    #[repr(C)]
+    struct PollFd {
+        fd: i32,
+        events: i16,
+        revents: i16,
+    }
+    const POLLIN: i16 = 0x0001;
+    let mut pfd = PollFd {
+        fd: fd as i32,
+        events: POLLIN,
+        revents: 0,
+    };
+    // SAFETY: single pollfd, valid fd from Device.
+    let rc = unsafe { libc_poll(&mut pfd as *mut PollFd as *mut _, 1, timeout_ms) };
+    rc != 0
+}
+
+unsafe extern "C" {
+    #[link_name = "poll"]
+    fn libc_poll(fds: *mut core::ffi::c_void, nfds: libc_nfds_t, timeout: i32) -> i32;
+}
+type libc_nfds_t = usize;
+
