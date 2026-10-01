@@ -254,7 +254,7 @@ dependencies = [
 
 [[package]]
 name = "titan2-touchpadd"
-version = "0.1.0"
+version = "0.1.250"
 dependencies = [
  "evdev",
  "eyre",
