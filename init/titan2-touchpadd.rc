@@ -1,0 +1,10 @@
+# GSI product — titan2-touchpadd (KEYBOARD_FEATURES off by default env in agent).
+# Service stays **disabled**: pad-agent owns mouse-mode lifecycle (no dual start).
+# Binary at /system/bin/titan2-touchpadd for product + tip-free path.
+
+service titan2-touchpadd /system/bin/titan2-touchpadd
+    class late_start
+    user root
+    group input uhid
+    disabled
+    oneshot
